@@ -11,18 +11,27 @@ function generateAddress() {
   return addr.replace(/(\d{3})(\d{3})(\d{3})/, '$1 $2 $3')
 }
 
-async function registerAddressWithBackend(addr) {
+async function registerAddressWithBackend(addr, hostId) {
   try {
     const code = addr.replace(/\s/g, '-')
-    await fetch('/api/session/create/', {
+    const response = await fetch('/api/session/create/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         code, 
         status: 'waiting', 
-        host_identifier: 'Web Client' 
+        host_identifier: hostId
       })
     })
+    if (response.ok) {
+      const data = await response.json()
+      // Use the actual code from server, format with spaces for UI
+      if (data.code) {
+        const authoritative = data.code.replace(/-/g, ' ')
+        myAddress.value = authoritative
+        localStorage.setItem('ad_my_address', authoritative)
+      }
+    }
   } catch (e) {
     console.error('Failed to register address with backend:', e)
   }
@@ -32,16 +41,23 @@ async function registerAddressWithBackend(addr) {
 function initAddress() {
   if (myAddress.value) return // already initialized
 
+  // 1. Get/Create Unique Host ID for this browser
+  let hostId = localStorage.getItem('ad_host_id')
+  if (!hostId) {
+    hostId = 'web-' + Math.random().toString(36).substring(2, 15)
+    localStorage.setItem('ad_host_id', hostId)
+  }
+
+  // 2. Get/Generate local address suggestion
   const stored = localStorage.getItem('ad_my_address')
   if (stored) {
     myAddress.value = stored
   } else {
     myAddress.value = generateAddress()
-    localStorage.setItem('ad_my_address', myAddress.value)
   }
 
-  // Register with backend so it is connectable
-  registerAddressWithBackend(myAddress.value)
+  // 3. Register with backend and get authoritative code
+  registerAddressWithBackend(myAddress.value, hostId)
 }
 
 export function useMyAddress() {

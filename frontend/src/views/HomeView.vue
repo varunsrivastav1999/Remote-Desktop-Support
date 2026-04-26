@@ -56,7 +56,7 @@
         <div v-if="activeTab==='favorites'" class="tab-content">
           <div class="section-label">Favorites</div>
           <div v-if="favSessions.length" :class="gridClass">
-            <div v-for="s in favSessions" :key="s.id" class="scard" @click="$parent.quickConnect?.(s.code)">
+            <div v-for="s in favSessions" :key="s.id" class="scard" @click="quickConnect(s.code)">
               <div class="scard__thumb" :style="{background:getColor(s.id)}">
                 <span :class="['sdot',s.status==='connected'?'sdot--on':'sdot--off']"></span>
                 <button class="scard__star" @click.stop="toggleFav(s)"><svg width="12" height="12" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
@@ -76,7 +76,7 @@
         </div>
 
         <!-- ═══ Tab: Recent Sessions (Local History) ═══ -->
-        <div v-else-if="activeTab==='recent'" class="tab-content">
+        <div v-else class="tab-content">
           <div class="section-label">My Recent Connections</div>
           <div v-if="history.length" :class="gridClass">
             <div v-for="s in history" :key="s.code" class="scard" @click="quickConnect(s.code)">
@@ -122,36 +122,7 @@
           </div>
         </div>
 
-        <!-- ═══ Tab: Discovered (Global Server List) ═══ -->
-        <div v-else class="tab-content">
-          <div class="section-label">Discovered (Global Signaling Server)</div>
-          
-          <!-- Loading -->
-          <div v-if="loading" class="empty-state"><span class="spinner-md"></span><p>Loading...</p></div>
-          
-          <!-- Sessions Grid -->
-          <div v-else-if="sessions.length" :class="gridClass">
-            <div v-for="s in sessions" :key="s.id" class="scard" @click="quickConnect(s.code)">
-              <div class="scard__thumb" :style="{background:getColor(s.id)}">
-                <span :class="['sdot', ['waiting', 'connected'].includes(s.status) ? 'sdot--on' : 'sdot--off']"></span>
-                <button class="scard__star" @click.stop="toggleFav(s)"><svg width="12" height="12" viewBox="0 0 24 24" :fill="favIds.has(s.id)?'#f59e0b':'none'" :stroke="favIds.has(s.id)?'#f59e0b':'rgba(255,255,255,0.7)'" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
-                <div class="scard__menu-wrap">
-                  <button class="scard__menu-btn" @click.stop="toggleMenu(s.id)"><svg width="12" height="12" viewBox="0 0 24 24" fill="rgba(255,255,255,0.7)"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
-                </div>
-              </div>
-              <div class="scard__info">
-                <div class="scard__row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg><span class="scard__name">{{ getDisplayName(s) }}</span></div>
-                <span class="scard__code font-mono">{{ s.code }}</span>
-              </div>
-            </div>
-          </div>
-          
-          <div v-else class="empty-state">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            <p class="empty-state__title">No Active Hosts</p>
-            <p class="empty-state__sub">Remote agents will appear here when they come online</p>
-          </div>
-        </div>
+
 
         <div class="tab-content" style="padding-top:0">
           <div class="section-label" style="margin-top:24px">Settings</div>
@@ -221,7 +192,7 @@ const activeTab = ref('recent')
 const viewMode = ref('grid-lg')
 const quality = ref('medium')
 
-// Security / Settings (Now moved to Discovered conceptually)
+// Security / Settings
 const unattendedEnabled = ref(false)
 const unattendedPw = ref('')
 const showPw = ref(false)
@@ -243,7 +214,6 @@ function copySetupCommand() {
 const tabs = [
   { id:'favorites', label:'Favorites' },
   { id:'recent', label:'Recent Sessions' },
-  { id:'discovered', label:'Discovered' },
 ]
 
 const gridClass = computed(() => ({

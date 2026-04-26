@@ -233,7 +233,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watchEffect, watch } from 'vue'
+import { ref, computed, watchEffect, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMyAddress } from './composables/useMyAddress'
 import { useSessions } from './composables/useSessions'
@@ -319,6 +319,8 @@ const isValidCode = computed(() => {
 
 function formatCode(e) {
   let v = e.target.value
+  const input = e.target
+  const selectionStart = input.selectionStart
 
   // If input contains letters or dots, it's an IP/Alias. Don't format it.
   if (/[a-zA-Z\.]/.test(v)) {
@@ -326,15 +328,24 @@ function formatCode(e) {
     return
   }
 
-  // Otherwise, strictly format as 9-digit XXX-XXX-XXX
-  v = v.replace(/[^\d]/g, '')
-  if (v.length > 9) v = v.slice(0, 9)
-  const p = []
-  if (v.length > 0) p.push(v.slice(0, 3))
-  if (v.length > 3) p.push(v.slice(3, 6))
-  if (v.length > 6) p.push(v.slice(6, 9))
+  // Otherwise, if it's mostly digits, format as 9-digit XXX-XXX-XXX
+  let digits = v.replace(/[^\d]/g, '')
+  if (digits.length > 9) digits = digits.slice(0, 9)
   
-  sessionCode.value = p.join('-')
+  let formatted = ''
+  if (digits.length > 0) formatted += digits.slice(0, 3)
+  if (digits.length > 3) formatted += '-' + digits.slice(3, 6)
+  if (digits.length > 6) formatted += '-' + digits.slice(6, 9)
+  
+  // Only update ref if value changed to prevent cursor jumping
+  if (sessionCode.value !== formatted) {
+    sessionCode.value = formatted
+    
+    // Restore cursor position roughly
+    nextTick(() => {
+      input.setSelectionRange(selectionStart, selectionStart)
+    })
+  }
 }
 
 async function joinSession() {

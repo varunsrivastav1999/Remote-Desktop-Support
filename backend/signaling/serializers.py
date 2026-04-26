@@ -26,6 +26,11 @@ class SessionJoinSerializer(serializers.Serializer):
     def validate_code(self, value):
         """Ensure the session exists by code, alias, or host_identifier."""
         identifier = value.strip()
+        
+        # If it's 9 digits, normalize to XXX-XXX-XXX format
+        if identifier.isdigit() and len(identifier) == 9:
+            identifier = f"{identifier[:3]}-{identifier[3:6]}-{identifier[6:9]}"
+            
         from django.db.models import Q
         session = Session.objects.filter(
             Q(code=identifier) | Q(alias=identifier) | Q(host_identifier=identifier)
