@@ -60,6 +60,55 @@ We provide a streamlined Docker Compose setup to run the platform in any environ
 5. **Access the Dashboard:**
    Navigate to `http://localhost:5173/` in your browser.
 
+## Local Network Setup (Two Laptops on Same Wi-Fi)
+
+Run Docker on the server laptop, then open the dashboard from either laptop:
+
+```bash
+docker compose up -d --build
+```
+
+Find the server laptop IP address:
+
+```bash
+ipconfig getifaddr en0
+# If that is empty, use:
+ifconfig | grep "inet "
+```
+
+Open the web app from laptop 2:
+
+```text
+http://<server-laptop-ip>:5173/
+```
+
+Run the host agent on the laptop you want to control:
+
+```bash
+cd host_agent
+python3 agent.py --server http://<server-laptop-ip>:8000
+```
+
+Use the session code printed by the host agent in the web dashboard. Full desktop sharing and keyboard/mouse control require the Python host agent to be running on the target machine.
+
+Leave the HTTP Proxy field empty for normal home/office Wi-Fi. It is only for networks where web traffic must go through a corporate proxy.
+
+### Local Smoke Tests
+
+Check that laptop 2 can reach the backend:
+
+```bash
+curl http://<server-laptop-ip>:8000/api/sessions/
+```
+
+Check Django admin CSS/static files:
+
+```bash
+curl -I http://<server-laptop-ip>:8000/static/admin/css/base.css
+```
+
+Check that the web dashboard can proxy WebSocket traffic by joining a real host-agent session from `http://<server-laptop-ip>:5173/`.
+
 ## Networking & World-Wide Connectivity
 
 To achieve a seamless connection over the internet and through strict firewalls (like AnyDesk or RustDesk):
@@ -68,6 +117,44 @@ To achieve a seamless connection over the internet and through strict firewalls 
 2.  **STUN/TURN Servers**: In many internet environments (Symmetric NAT), direct P2P connection fails. You must configure a **TURN Server** (e.g., Coturn) in the **Settings > Network** tab of the dashboard.
 3.  **ICE Candidates**: The platform automatically exchanges ICE candidates to find the most efficient path between the technician and the host agent.
 4.  **Security**: Use HTTPS/WSS for all production traffic to ensure your signaling data and remote sessions are encrypted.
+
+Example internet environment:
+
+```env
+DJANGO_ALLOWED_HOSTS=support.example.com
+CORS_ALLOW_ALL_ORIGINS=False
+CORS_ALLOWED_ORIGINS=https://support.example.com
+CSRF_TRUSTED_ORIGINS=https://support.example.com
+```
+
+Host agent with TURN:
+
+```bash
+python3 agent.py \
+  --server https://support.example.com \
+  --turn-server turn:turn.example.com:3478?transport=udp \
+  --turn-username <user> \
+  --turn-password <password>
+```
+
+The Docker stack includes an optional free Coturn relay on port `3478` with UDP relay ports `49160-49200`. On a public server, open/forward these ports and set the same values in the dashboard's Network tab:
+
+```text
+TURN server: turn:<server-ip-or-domain>:3478?transport=udp
+TURN username: remote
+TURN password: support@2026
+```
+
+Set `TURN_EXTERNAL_IP` in `.env` to the LAN IP for same-Wi-Fi relay testing, or to the server's public IP on a VPS.
+
+For the host agent, use matching CLI values or environment variables:
+
+```bash
+REMOTE_SUPPORT_TURN_SERVERS=turn:<server-ip-or-domain>:3478?transport=udp \
+REMOTE_SUPPORT_TURN_USERNAME=remote \
+REMOTE_SUPPORT_TURN_PASSWORD=support@2026 \
+python3 agent.py --server https://support.example.com
+```
 
 ## Contributing
 

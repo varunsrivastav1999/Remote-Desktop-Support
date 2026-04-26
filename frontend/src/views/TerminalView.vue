@@ -58,7 +58,7 @@ onMounted(() => {
     fitAddon.fit()
     
     // Welcome message
-    term.writeln('\x1b[1;31mAnyDesk SSH Terminal\x1b[0m')
+    term.writeln('\x1b[1;31mRemote Desktop SSH Terminal\x1b[0m')
     term.writeln(`Connecting to Session: \x1b[1;36m${route.params.code}\x1b[0m...`)
     setTimeout(() => {
       term.writeln('\x1b[1;32mConnection established.\x1b[0m')

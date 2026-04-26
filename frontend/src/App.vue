@@ -14,9 +14,9 @@
         </div>
       </div>
       <div class="topbar__center">
-        <span class="topbar__label">Your Address</span>
-        <span class="topbar__address font-mono">{{ myAddress }}</span>
-        <button class="topbar__icon-btn" @click="copyAddress" title="Copy Address">
+        <span class="topbar__label">Host Agent</span>
+        <span :class="['topbar__address','font-mono',{'topbar__address--offline':agentStatus==='offline'}]">{{ myAddress }}</span>
+        <button class="topbar__icon-btn" :disabled="agentStatus==='offline'" @click="copyAddress" title="Copy Address">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
         </button>
         <button class="topbar__icon-btn" @click="showSecurity=!showSecurity" title="Security Settings">
@@ -186,6 +186,14 @@
                   <textarea v-model="settings.turnServers" class="st-input" rows="3" placeholder="turn:relay.example.com?transport=udp"></textarea>
                   <p class="st-hint">Required for symmetric NAT traversal over the internet.</p>
                 </div>
+                <div class="st-group">
+                  <label>TURN Username</label>
+                  <input type="text" v-model="settings.turnUsername" class="st-input" placeholder="remote"/>
+                </div>
+                <div class="st-group">
+                  <label>TURN Password</label>
+                  <input type="password" v-model="settings.turnPassword" class="st-input" placeholder="Relay credential"/>
+                </div>
               </div>
 
               <!-- SSH Access -->
@@ -239,7 +247,7 @@ import { useMyAddress } from './composables/useMyAddress'
 import { useSessions } from './composables/useSessions'
 
 const router = useRouter()
-const { myAddress } = useMyAddress()
+const { myAddress, agentStatus } = useMyAddress()
 const { addToHistory } = useSessions()
 
 const sessionCode = ref('')
@@ -280,6 +288,8 @@ const defaultSettings = {
   signalingServer: '',
   stunServers: 'stun:stun.l.google.com:19302\nstun:stun1.l.google.com:19302',
   turnServers: '',
+  turnUsername: '',
+  turnPassword: '',
   sshAccess: false,
   sshPort: 22,
   sshKeys: ''
@@ -366,7 +376,10 @@ async function joinSession() {
   finally { isLoading.value = false }
 }
 
-function copyAddress() { navigator.clipboard?.writeText(myAddress.value.replace(/\s/g,'')) }
+function copyAddress() {
+  if (agentStatus.value === 'offline') return
+  navigator.clipboard?.writeText(myAddress.value.replace(/\s/g, ''))
+}
 </script>
 
 <style>
@@ -416,11 +429,13 @@ body.theme-light {
 .topbar__center { display:flex; align-items:center; gap:8px; flex-shrink:0; }
 .topbar__label { font-size:0.72rem; color:var(--ad-text-muted); }
 .topbar__address { font-size:1rem; font-weight:700; color:var(--color-accent-primary); letter-spacing:0.04em; }
+.topbar__address--offline { font-size:0.82rem; color:var(--ad-text-muted); letter-spacing:0; }
 
 .topbar__right { display:flex; align-items:center; gap:4px; flex-shrink:0; }
 
 .topbar__icon-btn { background:none; border:none; color:var(--ad-text-muted); cursor:pointer; padding:4px; border-radius:4px; display:flex; align-items:center; transition:all 150ms; }
 .topbar__icon-btn:hover { color:var(--ad-text); background:rgba(128,128,128,0.2); }
+.topbar__icon-btn:disabled { opacity:0.35; cursor:not-allowed; }
 
 .topbar__connect-btn { width:30px; height:30px; display:flex; align-items:center; justify-content:center; background:var(--color-accent-primary); border:none; border-radius:6px; color:white; cursor:pointer; flex-shrink:0; transition:all 150ms; }
 .topbar__connect-btn:hover:not(:disabled) { background:var(--color-accent-primary-hover); }

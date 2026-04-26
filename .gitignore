@@ -25,6 +25,7 @@ Thumbs.db
 # Docker
 .docker_data/
 pg_data/
+backend/staticfiles/
 
 # Artifacts
 .gemini/

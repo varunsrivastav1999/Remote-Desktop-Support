@@ -5,11 +5,14 @@
       <aside class="this-desk">
         <div class="this-desk__card">
           <h2 class="this-desk__title">This Desk</h2>
-          <p class="this-desk__label">Your Address</p>
+          <p class="this-desk__label">Host Agent Address</p>
           <div class="this-desk__address-row">
-            <span class="this-desk__address font-mono">{{ myAddress }}</span>
+            <span :class="['this-desk__address','font-mono',{'this-desk__address--offline':agentStatus==='offline'}]">{{ myAddress }}</span>
           </div>
-          <p class="this-desk__sub"><span class="status-dot status-dot--online"></span> Ready to connect (secure connection)</p>
+          <p class="this-desk__sub">
+            <span :class="['status-dot',agentStatus==='offline'?'status-dot--offline':'status-dot--online']"></span>
+            {{ agentStatus === 'offline' ? 'Waiting for host agent' : 'Ready to connect' }}
+          </p>
           
           <div class="this-desk__setup-box" style="margin-top:20px; border-top:1px solid var(--ad-border); padding-top:16px">
             <p class="this-desk__label">Deploy Host Agent</p>
@@ -58,7 +61,7 @@
           <div v-if="favSessions.length" :class="gridClass">
             <div v-for="s in favSessions" :key="s.id" class="scard" @click="quickConnect(s.code)">
               <div class="scard__thumb" :style="{background:getColor(s.id)}">
-                <span :class="['sdot',s.status==='connected'?'sdot--on':'sdot--off']"></span>
+                <span :class="['sdot',s.host_online?'sdot--on':'sdot--off']"></span>
                 <button class="scard__star" @click.stop="toggleFav(s)"><svg width="12" height="12" viewBox="0 0 24 24" fill="#f59e0b" stroke="#f59e0b" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
                 <button class="scard__menu" @click.stop><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
               </div>
@@ -81,7 +84,7 @@
           <div v-if="history.length" :class="gridClass">
             <div v-for="s in history" :key="s.code" class="scard" @click="quickConnect(s.code)">
               <div class="scard__thumb" :style="{background:getColor(s.id || 0)}">
-                <span class="sdot sdot--off"></span>
+                <span :class="['sdot',s.host_online?'sdot--on':'sdot--off']"></span>
                 <button class="scard__star" @click.stop="toggleFav(s)"><svg width="12" height="12" viewBox="0 0 24 24" :fill="favIds.has(s.id)?'#f59e0b':'none'" :stroke="favIds.has(s.id)?'#f59e0b':'rgba(255,255,255,0.7)'" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
                 <!-- 3-dot Menu -->
                 <div class="scard__menu-wrap">
@@ -170,7 +173,7 @@ import { useSessions } from '../composables/useSessions'
 import { useMyAddress } from '../composables/useMyAddress'
 
 const router = useRouter()
-const { myAddress } = useMyAddress()
+const { myAddress, agentStatus } = useMyAddress()
 
 const {
   sessions,
@@ -201,8 +204,11 @@ const accessMode = ref('confirm')
 const setupCopied = ref(false)
 
 const setupCommand = computed(() => {
-  const origin = window.location.origin
-  return `python agent.py --server ${origin}`
+  const serverUrl = new URL(window.location.origin)
+  if (serverUrl.port === '5173') serverUrl.port = '8000'
+  const normalizedUrl = serverUrl.toString()
+  const server = normalizedUrl.endsWith('/') ? normalizedUrl.slice(0, -1) : normalizedUrl
+  return `python3 agent.py --server ${server}`
 })
 
 function copySetupCommand() {
@@ -331,6 +337,7 @@ function showDetails(s) {
 .this-desk__label { font-size:0.8rem; color:var(--ad-text-muted); margin-bottom:4px; }
 .this-desk__address-row { display:flex; align-items:center; margin-bottom:12px; }
 .this-desk__address { font-size:1.8rem; font-weight:700; color:var(--color-accent-primary); letter-spacing:0.04em; }
+.this-desk__address--offline { font-size:1rem; color:var(--ad-text-muted); letter-spacing:0; }
 .this-desk__sub { font-size:0.75rem; color:var(--ad-text-muted); display:flex; align-items:center; gap:6px; }
 
 /* Right Panel */

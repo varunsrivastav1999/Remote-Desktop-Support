@@ -8,12 +8,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def env_bool(name, default=False):
+    """Parse common truthy env values."""
+    return os.getenv(name, str(default)).lower() in ('true', '1', 'yes', 'on')
+
+
+def env_csv(name, default=''):
+    """Parse a comma-separated env var into a clean list."""
+    return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
+
 # ─── Base ────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'insecure-dev-key-change-in-production')
-DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
-ALLOWED_HOSTS = os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+DEBUG = env_bool('DJANGO_DEBUG', True)
+ALLOWED_HOSTS = env_csv('DJANGO_ALLOWED_HOSTS', '*')
 
 # ─── Installed Apps ──────────────────────────────────────────
 INSTALLED_APPS = [
@@ -36,6 +46,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -98,15 +109,16 @@ REST_FRAMEWORK = {
 }
 
 # ─── CORS ────────────────────────────────────────────────────
-CORS_ALLOWED_ORIGINS = os.getenv(
+CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', DEBUG)
+CORS_ALLOWED_ORIGINS = env_csv(
     'CORS_ALLOWED_ORIGINS',
     'http://localhost:5173,http://127.0.0.1:5173'
-).split(',')
+)
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-]
+CSRF_TRUSTED_ORIGINS = env_csv(
+    'CSRF_TRUSTED_ORIGINS',
+    'http://localhost:5173,http://127.0.0.1:5173',
+)
 
 # ─── Auth ────────────────────────────────────────────────────
 AUTH_PASSWORD_VALIDATORS = [
@@ -123,8 +135,16 @@ USE_I18N = True
 USE_TZ = True
 
 # ─── Static files ────────────────────────────────────────────
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 
 # ─── Default auto field ─────────────────────────────────────
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

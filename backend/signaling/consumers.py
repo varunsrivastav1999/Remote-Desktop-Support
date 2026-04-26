@@ -71,7 +71,7 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
         # Update session status and clear channel
         if self.peer_role:
-            await self.update_session_status(Session.Status.DISCONNECTED, clear_channel=True)
+            await self.handle_peer_disconnect()
 
         logger.info(
             f"Peer ({self.peer_role or 'unknown'}) disconnected from "
@@ -186,10 +186,14 @@ class SignalingConsumer(AsyncWebsocketConsumer):
 
     async def send_error(self, message):
         """Send an error message back to the client."""
-        await self.send(text_data=json.dumps({
+        await self.send_json({
             'type': 'error',
             'message': message,
-        }))
+        })
+
+    async def send_json(self, data):
+        """Send JSON over the WebSocket."""
+        await self.send(text_data=json.dumps(data))
 
     @database_sync_to_async
     def get_session(self):
@@ -235,6 +239,30 @@ class SignalingConsumer(AsyncWebsocketConsumer):
                 session.connected_at = timezone.now()
             elif new_status == Session.Status.DISCONNECTED:
                 session.disconnected_at = timezone.now()
+            session.save()
+        except Session.DoesNotExist:
+            pass
+
+    @database_sync_to_async
+    def handle_peer_disconnect(self):
+        """Clear this peer and preserve host availability when only the viewer leaves."""
+        from django.utils import timezone
+
+        try:
+            session = Session.objects.get(code=self.session_code)
+
+            if self.peer_role == 'host':
+                session.host_channel = ''
+                session.status = Session.Status.DISCONNECTED
+                session.disconnected_at = timezone.now()
+            elif self.peer_role == 'client':
+                session.client_channel = ''
+                if session.host_channel:
+                    session.status = Session.Status.WAITING
+                else:
+                    session.status = Session.Status.DISCONNECTED
+                    session.disconnected_at = timezone.now()
+
             session.save()
         except Session.DoesNotExist:
             pass

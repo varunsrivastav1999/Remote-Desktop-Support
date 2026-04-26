@@ -42,7 +42,10 @@ class SessionJoinSerializer(serializers.Serializer):
         if session.status == Session.Status.EXPIRED:
             raise serializers.ValidationError('This session has expired.')
 
-        if session.status == Session.Status.CONNECTED:
+        if not session.host_channel:
+            raise serializers.ValidationError('Remote host is offline. Start the host agent and try again.')
+
+        if session.status == Session.Status.CONNECTED and session.client_channel:
             raise serializers.ValidationError('This session is already in use.')
 
         # Return the actual session object so views.py can use it
@@ -57,7 +60,26 @@ class SessionJoinSerializer(serializers.Serializer):
 class SessionDetailSerializer(serializers.ModelSerializer):
     """Read-only serializer for session details."""
 
+    host_online = serializers.SerializerMethodField()
+    client_online = serializers.SerializerMethodField()
+
     class Meta:
         model = Session
-        fields = ['id', 'code', 'status', 'host_identifier', 'alias', 'created_at', 'connected_at']
+        fields = [
+            'id',
+            'code',
+            'status',
+            'host_identifier',
+            'alias',
+            'created_at',
+            'connected_at',
+            'host_online',
+            'client_online',
+        ]
         read_only_fields = fields
+
+    def get_host_online(self, obj):
+        return bool(obj.host_channel)
+
+    def get_client_online(self, obj):
+        return bool(obj.client_channel)

@@ -29,12 +29,34 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── TURN Relay (Optional, AnyDesk/RustDesk-style fallback) ─────────
+  turn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    command:
+      - -n
+      - --log-file=stdout
+      - --lt-cred-mech
+      - --realm=${TURN_REALM:-remote-support.local}
+      - --user=${TURN_USERNAME:-remote}:${TURN_PASSWORD:-support@2026}
+      - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --no-tls
+      - --no-dtls
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+
   # ─── Django Backend (ASGI via Daphne) ─────────────────────
   backend:
     build: ./backend
     restart: unless-stopped
     command: >
       sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
              daphne -b 0.0.0.0 -p 8000 remote_desktop_prj.asgi:application"
     env_file: .env
     volumes:
@@ -58,6 +80,9 @@ services:
     build: ./frontend
     restart: unless-stopped
     command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_BACKEND_HTTP_URL: http://backend:8000
+      VITE_BACKEND_WS_URL: ws://backend:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules

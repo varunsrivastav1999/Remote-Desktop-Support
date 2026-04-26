@@ -38,7 +38,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['mouse-event', 'key-event'])
+const emit = defineEmits(['mouse-event', 'key-event', 'clipboard-paste'])
 
 const container = ref(null)
 const videoEl = ref(null)
@@ -54,6 +54,7 @@ watch(
   (newStream) => {
     if (videoEl.value && newStream) {
       videoEl.value.srcObject = newStream
+      videoEl.value.play().catch(e => console.warn('[RemoteScreen] Video play failed:', e))
     }
   },
   { immediate: true }
@@ -126,8 +127,20 @@ function handleWheel(event) {
 
 /**
  * Handle keyboard events.
+ * Intercepts Ctrl+V to sync clipboard to host.
  */
 function handleKey(type, event) {
+  // Intercept Ctrl+V / Cmd+V to sync clipboard
+  if (type === 'keydown' && event.key === 'v' && (event.ctrlKey || event.metaKey)) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.readText().then(text => {
+        if (text) {
+          emit('clipboard-paste', text)
+        }
+      }).catch(() => {})
+    }
+  }
+
   emit('key-event', {
     type,
     key: event.key,
