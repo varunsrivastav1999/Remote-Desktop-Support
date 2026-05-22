@@ -14,6 +14,7 @@
       @toggle-stats="showStats = !showStats"
       @toggle-chat="toggleChat"
       @toggle-files="showFiles = !showFiles"
+      @toggle-terminal="showTerminal = !showTerminal"
       @clipboard-sync="syncClipboard"
       @switch-monitor="webrtc.switchMonitor($event)"
     />
@@ -61,6 +62,13 @@
         @close="showFiles = false"
       />
 
+      <!-- SSH Terminal Panel -->
+      <TerminalPanel
+        :visible="showTerminal"
+        :webrtc="webrtc"
+        @close="showTerminal = false"
+      />
+
       <!-- Auth Overlay -->
       <div v-if="webrtc.authRequired.value" class="auth-overlay fade-in">
         <div class="auth-card">
@@ -91,6 +99,7 @@ import Toolbar from '../components/Toolbar.vue'
 import StatsOverlay from '../components/StatsOverlay.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import FileTransfer from '../components/FileTransfer.vue'
+import TerminalPanel from '../components/TerminalPanel.vue'
 
 const props = defineProps({
   code: {
@@ -106,6 +115,7 @@ const screenContainer = ref(null)
 const showStats = ref(false)
 const showChat = ref(false)
 const showFiles = ref(false)
+const showTerminal = ref(false)
 
 // Auth state
 const passwordInput = ref('')

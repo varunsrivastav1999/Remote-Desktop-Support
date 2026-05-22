@@ -29,6 +29,7 @@ export function useWebRTC(signaling) {
   const peerConnection = ref(null)
   const dataChannel = ref(null)
   const fileChannel = ref(null)
+  const terminalChannel = ref(null)
   const remoteStream = ref(null)
   const connectionState = ref('new')    // new | connecting | connected | disconnected | failed
   const iceState = ref('new')
@@ -163,6 +164,8 @@ export function useWebRTC(signaling) {
         setupDataChannel(event.channel)
       } else if (event.channel.label === 'file-transfer') {
         setupFileChannel(event.channel)
+      } else if (event.channel.label === 'terminal') {
+        setupTerminalChannel(event.channel)
       }
     }
 
@@ -248,6 +251,31 @@ export function useWebRTC(signaling) {
   function setupFileChannel(dc) {
     fileChannel.value = dc
     console.log('[WebRTC] File transfer channel ready')
+  }
+
+  /**
+   * Set up the terminal data channel.
+   */
+  let terminalMessageCallback = null
+  function setupTerminalChannel(dc) {
+    terminalChannel.value = dc
+    dc.onopen = () => console.log('[WebRTC] Terminal channel OPEN')
+    dc.onmessage = (event) => {
+      if (terminalMessageCallback) {
+        terminalMessageCallback(event.data)
+      }
+    }
+    dc.onclose = () => console.log('[WebRTC] Terminal channel CLOSED')
+  }
+
+  function setTerminalCallback(callback) {
+    terminalMessageCallback = callback
+  }
+
+  function sendTerminalData(data) {
+    if (terminalChannel.value && terminalChannel.value.readyState === 'open') {
+      terminalChannel.value.send(data)
+    }
   }
 
   /**
@@ -480,6 +508,10 @@ export function useWebRTC(signaling) {
 
   function close() {
     stopStatsPolling()
+    if (terminalChannel.value) {
+      terminalChannel.value.close()
+      terminalChannel.value = null
+    }
     if (fileChannel.value) {
       fileChannel.value.close()
       fileChannel.value = null
@@ -525,6 +557,8 @@ export function useWebRTC(signaling) {
     sendClipboard,
     sendChat,
     setChatVisible,
+    sendTerminalData,
+    setTerminalCallback,
     close,
   }
 }

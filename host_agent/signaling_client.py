@@ -32,6 +32,7 @@ from aiortc.sdp import candidate_from_sdp, candidate_to_sdp
 from screen_capture import ScreenCaptureTrack
 from input_handler import InputHandler
 from file_transfer import FileTransferHandler
+from terminal_handler import TerminalHandler
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ class SignalingClient:
         self.screen_track: Optional[ScreenCaptureTrack] = None
         self.input_handler: Optional[InputHandler] = None
         self.file_handler: Optional[FileTransferHandler] = None
+        self.terminal_handler: Optional[TerminalHandler] = None
         self._ice_candidate_queue = []
         self._running = False
 
@@ -284,6 +286,19 @@ class SignalingClient:
             def on_file_message(msg):
                 if self.file_handler:
                     self.file_handler.handle_message(msg)
+
+            # ─── Terminal Data Channel ───────────────────────
+            self.terminal_channel = self.pc.createDataChannel("terminal", ordered=True)
+
+            @self.terminal_channel.on("open")
+            def on_terminal_open():
+                logger.info("Terminal data channel OPEN")
+                self.terminal_handler = TerminalHandler(self.terminal_channel, loop=asyncio.get_running_loop())
+
+            @self.terminal_channel.on("message")
+            def on_terminal_message(msg):
+                if self.terminal_handler:
+                    self.terminal_handler.handle_message(msg)
 
             @self.pc.on("icecandidate")
             def on_ice_candidate(candidate):
@@ -525,6 +540,9 @@ class SignalingClient:
         if self.file_handler:
             self.file_handler.cleanup()
             self.file_handler = None
+        if self.terminal_handler:
+            self.terminal_handler.cleanup()
+            self.terminal_handler = None
         if self.screen_track:
             self.screen_track.stop()
             self.screen_track = None

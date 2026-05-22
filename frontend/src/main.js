@@ -16,12 +16,6 @@ const routes = [
     component: () => import('./views/SessionView.vue'),
     props: true,
   },
-  {
-    path: '/ssh/:code',
-    name: 'Terminal',
-    component: () => import('./views/TerminalView.vue'),
-    props: true,
-  },
 ]
 
 const router = createRouter({
