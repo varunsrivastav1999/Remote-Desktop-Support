@@ -178,7 +178,7 @@ class SignalingClient:
                 reconnect_delay = min(reconnect_delay * 2, 60)
 
             except Exception as e:
-                logger.error(f"Connection failed: {e}")
+                logger.exception("Connection failed")
                 if not self._running:
                     break
                 logger.info(f"Retrying in {reconnect_delay}s...")

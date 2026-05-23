@@ -22,13 +22,12 @@ The platform consists of three main components:
 2. **Signaling Server (Django + Channels)**: The backend broker. Manages database persistence (PostgreSQL), REST APIs, and WebSocket signaling to negotiate P2P connections between the technician and the host.
 3. **Host Agent (Python/C++)**: A lightweight daemon installed on the remote machine that captures the screen, executes input commands, and establishes the reverse connection to the signaling server.
 
-## Quick Start (Production Deployment)
+## Quick Start (Zero-Config Global Deployment) 🌍
 
-We provide a streamlined Docker Compose setup to run the platform in any environment.
+We provide a streamlined Docker Compose setup that spins up the platform and automatically creates a **Cloudflare Edge Tunnel**, allowing you to access it securely from anywhere in the world without any router configuration!
 
 ### Prerequisites
 - Docker & Docker Compose
-- Node.js (for local frontend development)
 
 ### Deployment Steps
 
@@ -38,27 +37,21 @@ We provide a streamlined Docker Compose setup to run the platform in any environ
    cd remote-support
    ```
 
-2. **Start the services:**
-   Run the following command to build and launch the Postgres database, Redis broker, and Django backend:
+2. **Start the Production Services:**
+   Run the following command to build and launch the Postgres database, Redis broker, Django backend, Nginx frontend, and Cloudflare Tunnel:
    ```bash
    docker-compose up -d --build
    ```
 
-3. **Run database migrations:**
+3. **Get Your Global Access URL:**
+   The Cloudflare tunnel automatically generates a secure, public HTTPS link for your platform. Retrieve it from the logs:
    ```bash
-   docker-compose exec web python manage.py migrate
+   docker-compose logs cloudflare_tunnel | grep trycloudflare
    ```
+   *(Look for a URL like `https://some-random-words.trycloudflare.com`)*
 
-4. **Start the Frontend (Development):**
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
-   *For production frontend deployment, use `npm run build` and serve the `dist/` directory via Nginx.*
-
-5. **Access the Dashboard:**
-   Navigate to `http://localhost:5173/` in your browser.
+4. **Access the Dashboard:**
+   Open the URL from Step 3 in any web browser, from anywhere in the world!
 
 ## Local Network Setup (Two Laptops on Same Wi-Fi)
 
@@ -109,9 +102,21 @@ curl -I http://<server-laptop-ip>:8000/static/admin/css/base.css
 
 Check that the web dashboard can proxy WebSocket traffic by joining a real host-agent session from `http://<server-laptop-ip>:5173/`.
 
-## Networking & World-Wide Connectivity
+## Networking & Advanced Global Connectivity
 
-To achieve a seamless connection over the internet and through strict firewalls (like AnyDesk or RustDesk):
+To achieve a seamless connection over the internet and through strict firewalls (like AnyDesk or RustDesk), you have two options:
+
+### Option 1: The Built-in Cloudflare Tunnel (Recommended)
+By default, the `docker-compose.yml` stack uses Cloudflare's enterprise edge network (`cloudflared`) to tunnel your local traffic to the world. It provides native WebSocket support and zero-trust security without opening any ports on your local router.
+
+To use the host agent over this tunnel:
+```bash
+cd host_agent
+python3 agent.py --server https://<your-cloudflare-url>.trycloudflare.com
+```
+
+### Option 2: Dedicated Cloud VPS Deployment
+If you are deploying this to a permanent cloud server (e.g., DigitalOcean, AWS), you should map a custom domain to it.
 
 1.  **Public Signaling Server**: Ensure the `backend` service is deployed on a server with a public IP or a domain name.
 2.  **STUN/TURN Servers**: In many internet environments (Symmetric NAT), direct P2P connection fails. You must configure a **TURN Server** (e.g., Coturn) in the **Settings > Network** tab of the dashboard.

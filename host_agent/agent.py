@@ -26,6 +26,7 @@ import socket
 import sys
 import json
 import uuid
+import signal
 
 from signaling_client import SignalingClient
 
@@ -139,8 +140,10 @@ async def main(args):
         await client.connect_and_serve()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except asyncio.CancelledError:
+        logger.info("Agent shutdown gracefully")
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.exception("Critical error in host agent")
     finally:
         await client._cleanup()
         logger.info("Agent stopped.")
@@ -257,7 +260,24 @@ def split_server_list(values):
 
 if __name__ == '__main__':
     args = parse_args()
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    main_task = loop.create_task(main(args))
+    
+    # Graceful shutdown handler
+    def shutdown():
+        print("\nInitiating graceful shutdown...")
+        main_task.cancel()
+        
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown)
+        
     try:
-        asyncio.run(main(args))
-    except KeyboardInterrupt:
-        print("\nGoodbye!")
+        loop.run_until_complete(main_task)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        loop.close()
+        print("Goodbye!")

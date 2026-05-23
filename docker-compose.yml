@@ -75,22 +75,23 @@ services:
       retries: 3
       start_period: 10s
 
-  # ─── Vue.js Frontend (Vite Dev Server) ────────────────────
+  # ─── Vue.js Frontend (Nginx Production Build) ─────────────
   frontend:
     build: ./frontend
     restart: unless-stopped
-    command: npm run dev -- --host 0.0.0.0
-    environment:
-      VITE_BACKEND_HTTP_URL: http://backend:8000
-      VITE_BACKEND_WS_URL: ws://backend:8000
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     ports:
       - "5173:5173"
     depends_on:
       backend:
         condition: service_healthy
+
+  # ─── Cloudflare Tunnel (Zero-Config Global Access) ──────────
+  cloudflare_tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --url http://frontend:5173 --no-autoupdate
+    depends_on:
+      - frontend
 
 volumes:
   pg_data:

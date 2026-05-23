@@ -22,7 +22,7 @@ def env_csv(name, default=''):
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'insecure-dev-key-change-in-production')
-DEBUG = env_bool('DJANGO_DEBUG', True)
+DEBUG = env_bool('DJANGO_DEBUG', False)
 ALLOWED_HOSTS = env_csv('DJANGO_ALLOWED_HOSTS', '*')
 
 # ─── Installed Apps ──────────────────────────────────────────
