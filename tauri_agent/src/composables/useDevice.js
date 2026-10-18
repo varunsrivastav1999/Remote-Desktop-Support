@@ -181,13 +181,18 @@ function stopHeartbeat() {
   }
 }
 
+let deviceWsPingInterval = null
+
 /**
  * WebSocket for real-time incoming connection requests: /ws/device/{device_id}
  */
 function connectDevicePushWs() {
   if (!deviceId.value) return
+  if (deviceWs && (deviceWs.readyState === WebSocket.OPEN || deviceWs.readyState === WebSocket.CONNECTING)) {
+    return
+  }
   if (deviceWs) {
-    try { deviceWs.close() } catch (_) {}
+    try { deviceWs.close(1000) } catch (_) {}
     deviceWs = null
   }
 
@@ -218,6 +223,14 @@ function connectDevicePushWs() {
   deviceWs.onopen = () => {
     console.log(`[Remote Desktop] Connected to device push channel: ${deviceId.value}`)
     wsReconnectAttempts = 0
+    clearInterval(deviceWsPingInterval)
+    deviceWsPingInterval = setInterval(() => {
+      if (deviceWs && deviceWs.readyState === WebSocket.OPEN) {
+        try {
+          deviceWs.send(JSON.stringify({ type: 'ping' }))
+        } catch (_) {}
+      }
+    }, 15000)
   }
 
   deviceWs.onmessage = (event) => {
@@ -230,6 +243,7 @@ function connectDevicePushWs() {
   }
 
   deviceWs.onclose = (event) => {
+    clearInterval(deviceWsPingInterval)
     console.log(`[Remote Desktop] Device push channel disconnected (code=${event.code})`)
     deviceWs = null
     if (event.code !== 1000) {
@@ -240,7 +254,7 @@ function connectDevicePushWs() {
 
 function scheduleWsReconnect() {
   if (wsReconnectTimer) return
-  const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000)
+  const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 15000)
   wsReconnectTimer = setTimeout(() => {
     wsReconnectTimer = null
     wsReconnectAttempts++
@@ -278,7 +292,7 @@ function clearIncomingRequest() {
 function handlePushMessage(msg) {
   if (msg.type === 'connection_request' || msg.type === 'client_waiting') {
     incomingRequest.value = {
-      requestId: msg.request_id || 'direct-signaling',
+      requestId: msg.request_id || `direct-${msg.session_code || deviceId.value || 'peer'}`,
       callerDeviceId: msg.caller_device_id || msg.caller_connection_id || 'Remote Client',
       callerName: msg.caller_name || 'Remote Controller',
     }

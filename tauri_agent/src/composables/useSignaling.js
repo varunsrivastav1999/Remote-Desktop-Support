@@ -17,6 +17,7 @@ export function useSignaling() {
   let reconnectTimer = null
   let reconnectAttempts = 0
   let heartbeatTimer = null
+  const pendingMessages = []
 
   // Event callbacks
   let onMessageCallback = null
@@ -59,6 +60,14 @@ export function useSignaling() {
       reconnectAttempts = 0
       startHeartbeat()
       onOpenCallback?.()
+
+      // Flush any messages queued while WebSocket was connecting
+      while (pendingMessages.length > 0) {
+        const queuedMsg = pendingMessages.shift()
+        try {
+          socket.value.send(JSON.stringify(queuedMsg))
+        } catch (_) {}
+      }
     }
 
     socket.value.onmessage = (event) => {
@@ -135,13 +144,18 @@ export function useSignaling() {
   }
 
   function send(message) {
-    if (!socket.value || socket.value.readyState !== WebSocket.OPEN) return false
+    if (!socket.value) return false
+    if (socket.value.readyState === WebSocket.CONNECTING) {
+      pendingMessages.push(message)
+      return true
+    }
+    if (socket.value.readyState !== WebSocket.OPEN) return false
     socket.value.send(JSON.stringify(message))
     return true
   }
 
-  function register(role, hostToken = '') {
-    const message = { type: 'register', role }
+  function register(role, hostToken = '', extra = {}) {
+    const message = { type: 'register', role, ...extra }
     if (role === 'host') message.host_token = hostToken
     return send(message)
   }

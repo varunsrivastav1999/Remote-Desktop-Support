@@ -78,6 +78,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSignaling } from '../composables/useSignaling.js'
 import { useWebRTC } from '../composables/useWebRTC.js'
+import { useDevice } from '../composables/useDevice.js'
 import RemoteScreen from '../components/RemoteScreen.vue'
 import ConnectionPanel from '../components/ConnectionPanel.vue'
 import Toolbar from '../components/Toolbar.vue'
@@ -108,6 +109,7 @@ function toggleChat() {
 }
 
 // ─── Initialize composables ────────────────────────────────
+const device = useDevice()
 const signaling = useSignaling()
 const webrtc = useWebRTC(signaling)
 
@@ -123,7 +125,10 @@ onMounted(() => {
 
   signaling.onOpen(() => {
     // Register as client (viewer/controller)
-    signaling.register('client')
+    signaling.register('client', '', {
+      client_device_id: device.deviceId.value || 'Remote Client',
+      caller_name: device.deviceName.value || 'Remote Controller',
+    })
   })
 
   signaling.onClose((event) => {

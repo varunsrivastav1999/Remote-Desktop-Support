@@ -77,7 +77,7 @@
 
     <!-- ═══ Incoming Connection Request Modal (Host-Side) ═══ -->
     <transition name="fade">
-      <div v-if="device.incomingRequest.value || hostSession.pendingController.value" class="incoming-overlay">
+      <div v-if="hasIncomingRequest" class="incoming-overlay">
         <div class="incoming-dialog">
           <div class="incoming-header">
             <span class="incoming-pulse-dot"></span>
@@ -85,8 +85,8 @@
           </div>
           <div class="incoming-content">
             <div class="caller-card">
-              <span class="caller-name">{{ device.incomingRequest.value?.callerName || hostSession.incomingCallerName?.value || 'Remote Controller' }}</span>
-              <span class="caller-id font-mono">Device ID: {{ device.incomingRequest.value?.callerDeviceId || hostSession.incomingCallerId?.value || 'Remote Peer' }}</span>
+              <span class="caller-name">{{ incomingCallerName }}</span>
+              <span class="caller-id font-mono">Device ID: {{ incomingCallerId }}</span>
             </div>
             <p class="incoming-sub">
               This computer requests access to view your screen and provide remote support.
@@ -258,6 +258,10 @@ const { myAddress, agentStatus } = useMyAddress()
 const { addToHistory } = useSessions()
 const hostSession = useHostSession()
 const nativeHost = isNativeApp()
+
+const hasIncomingRequest = computed(() => Boolean(device.incomingRequest.value || hostSession.pendingController.value))
+const incomingCallerName = computed(() => device.incomingRequest.value?.callerName || hostSession.incomingCallerName.value || 'Remote Controller')
+const incomingCallerId = computed(() => device.incomingRequest.value?.callerDeviceId || hostSession.incomingCallerId.value || 'Remote Peer')
 
 const sessionCode = ref('')
 const isLoading = ref(false)
@@ -479,6 +483,7 @@ function copyAddress() {
 
 onMounted(async () => {
   await device.registerDevice()
+  await hostSession.ensureOnline()
 })
 </script>
 

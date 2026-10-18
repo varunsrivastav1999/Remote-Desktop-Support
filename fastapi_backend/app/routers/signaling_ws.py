@@ -25,12 +25,8 @@ SIGNAL_TYPES = {
 
 def normalize_session_code(val: str) -> str:
     cleaned = val.strip()
-    if cleaned.startswith("AG-") or cleaned.startswith("ag-"):
-        return normalize_device_id(cleaned)
-    digits = "".join(c for c in cleaned if c.isdigit())
-    if len(digits) == 9:
-        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
-    return cleaned
+    return normalize_device_id(cleaned)
+
 
 
 # ═════════════════════════════════════════════════════════════
@@ -227,28 +223,26 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 else:
                     # requested_role == "client"
                     # Notify host via device push channel that a client is waiting in room
+                    caller_id = data.get("client_device_id") or "Remote Client"
+                    caller_name = data.get("caller_name") or "Remote Controller"
                     await redis_client.publish(
                         f"channel:device:{code}",
                         json.dumps({
                             "type": "client_waiting",
                             "session_code": code,
                             "connection_id": connection_id,
+                            "request_id": f"direct-{code}",
+                            "caller_device_id": caller_id,
+                            "caller_name": caller_name,
                         }),
                     )
 
-                claimed = await redis_client.set(
+                # Set or update the active peer connection for this role in Redis
+                await redis_client.set(
                     peer_key(requested_role),
                     connection_id,
                     ex=PEER_TTL_SECONDS,
-                    nx=True,
                 )
-                if not claimed:
-                    # Check if stale connection
-                    old_conn = await redis_client.get(peer_key(requested_role))
-                    if old_conn != connection_id:
-                        await send_error(f"A {requested_role} is already connected.")
-                        await websocket.close(code=4409, reason="Peer role in use")
-                        break
 
                 role = requested_role
                 other_role = "client" if role == "host" else "host"
@@ -264,9 +258,15 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                         "message": "Waiting for remote host to start stream...",
                     })
 
+                peer_joined_payload = {
+                    "type": "peer_joined",
+                    "role": role,
+                    "caller_device_id": data.get("client_device_id") or "Remote Client",
+                    "caller_name": data.get("caller_name") or "Remote Controller",
+                }
                 await publish_event(
                     role,
-                    {"type": "peer_joined", "role": role},
+                    peer_joined_payload,
                     other_role,
                 )
                 continue

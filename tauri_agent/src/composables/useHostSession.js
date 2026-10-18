@@ -43,7 +43,7 @@ function createHostSession() {
   const pressedKeys = new Set()
 
   async function ensureOnline() {
-    if (sessionCode.value && device.deviceStatus.value === 'online') return true
+    if (sessionCode.value && device.deviceStatus.value === 'online' && signaling.isConnected.value) return true
     if (onlinePromise) return onlinePromise
 
     onlinePromise = registerDesk()
@@ -142,19 +142,21 @@ function createHostSession() {
           : 'Online. Screen access starts only after your approval.'
       } else if (message.type === 'peer_joined' && message.role === 'client') {
         pendingController.value = true
+        incomingCallerName.value = message.caller_name || 'Remote Controller'
+        incomingCallerId.value = message.caller_device_id || message.client_device_id || 'Remote Client'
         state.value = 'approval'
-        statusText.value = 'A remote controller is requesting access.'
+        statusText.value = `A remote controller (${incomingCallerName.value}) is requesting access.`
+
+        device.triggerIncomingRequest?.({
+          requestId: `direct-${sessionCode.value || 'peer'}`,
+          callerDeviceId: incomingCallerId.value,
+          callerName: incomingCallerName.value,
+        })
 
         // If screen is ALREADY shared, automatically send offer immediately
         if (screenShare.localStream.value) {
           console.log('[HostSession] Screen stream active, automatically starting WebRTC offer...')
           await allowController(true)
-        } else {
-          device.triggerIncomingRequest?.({
-            requestId: 'direct-peer',
-            callerDeviceId: 'Remote Client',
-            callerName: 'Remote Controller',
-          })
         }
       } else if (message.type === 'answer' && peerConnection) {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp))
@@ -191,6 +193,14 @@ function createHostSession() {
     state.value = 'connecting'
     statusText.value = 'Connecting approved controller...'
     closePeer()
+
+    // Ensure signaling is online & connected
+    if (!signaling.isConnected.value) {
+      await ensureOnline()
+      for (let i = 0; i < 30 && !signaling.isConnected.value; i++) {
+        await new Promise(r => setTimeout(r, 100))
+      }
+    }
 
     peerConnection = new RTCPeerConnection(rtcConfiguration(settings))
     for (const track of screenShare.localStream.value.getTracks()) {
