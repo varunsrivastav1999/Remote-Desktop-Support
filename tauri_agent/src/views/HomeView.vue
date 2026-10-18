@@ -194,6 +194,7 @@ const {
   startPolling,
   stopPolling,
   loadHistory,
+  addToHistory,
   toggleFav,
   getDisplayName,
 } = useSessions()
@@ -246,12 +247,31 @@ function quickConnect(code) {
 }
 
 function handleDirectConnect() {
-  let target = quickConnectInput.value.trim().toUpperCase()
-  if (!target) return
-  if (!target.startsWith('AG-') && target.replace(/\D/g, '').length === 9) {
-    const d = target.replace(/\D/g, '')
-    target = `AG-${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6, 9)}`
+  let raw = (quickConnectInput.value || '').trim()
+  if (!raw) return
+  let target = raw.toUpperCase()
+  const digits = target.replace(/\D/g, '')
+  if (digits.length === 9) {
+    target = `AG-${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6, 9)}`
   }
+
+  // Record in connection history
+  addToHistory({ code: target, id: target, host_online: true })
+
+  // Send connection request to backend in background
+  try {
+    fetch(apiUrl('/api/v1/sessions/connect', loadNetworkSettings()), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        caller_device_id: device.deviceId.value || 'AG-000-000-000',
+        caller_name: device.deviceName.value || 'Remote Client',
+        target_device_id: target,
+      }),
+    }).catch(() => {})
+  } catch (_) {}
+
+  // Immediately start connection by pushing to Session view
   router.push({ name: 'Session', params: { code: target } })
 }
 

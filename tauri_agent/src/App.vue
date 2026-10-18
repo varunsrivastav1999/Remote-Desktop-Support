@@ -13,22 +13,35 @@
         </div>
 
         <div class="topbar__connect">
-          <span class="topbar__status-icon" :title="`Status: ${agentStatus}`">
-            <span :class="['status-dot', agentStatus === 'online' ? 'status-dot--online' : agentStatus === 'connected' ? 'status-dot--connected' : 'status-dot--offline']"></span>
-          </span>
+          <svg class="topbar__search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00e5ff" stroke-width="2.2">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="m21 21-4.3-4.3"/>
+          </svg>
           <input
             type="text"
             class="topbar__input font-mono"
             placeholder="Enter Device ID (AG-XXX-XXX-XXX)"
             :value="sessionCode"
             @input="formatCode"
-            @keydown.enter="joinSession"
+            @keydown.enter.prevent="joinSession"
           />
+          <button
+            class="topbar__inline-connect-btn"
+            :disabled="!isValidCode || isLoading"
+            @click="joinSession"
+            title="Connect to Remote Device (Press Enter)"
+          >
+            <svg v-if="!isLoading" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            <span v-else class="spinner-sm"></span>
+          </button>
         </div>
       </div>
 
       <div class="topbar__center">
         <span class="topbar__label">This Device:</span>
+        <span class="topbar__status-badge" :title="`Status: ${agentStatus}`">
+          <span :class="['status-dot', agentStatus === 'online' ? 'status-dot--online' : agentStatus === 'connected' ? 'status-dot--connected' : 'status-dot--offline']"></span>
+        </span>
         <span :class="['topbar__address', 'font-mono', {'topbar__address--offline': agentStatus === 'offline'}]">
           {{ myAddress }}
         </span>
@@ -47,10 +60,6 @@
         </button>
         <button class="topbar__icon-btn" title="Settings" @click="showSettings = true">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        </button>
-        <button class="topbar__connect-btn" :disabled="!isValidCode || isLoading" @click="joinSession" title="Connect to Remote Device">
-          <svg v-if="!isLoading" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-          <span v-else class="spinner-sm"></span>
         </button>
       </div>
     </header>
@@ -314,18 +323,15 @@ function toggleTheme() {
   isLightMode.value = !isLightMode.value
 }
 
-// Check valid Device ID (AG-XXX-XXX-XXX or XXX-XXX-XXX or 9 digits)
+// Check valid Device ID or session code
 const isValidCode = computed(() => {
-  const val = sessionCode.value.trim().toUpperCase()
-  if (!val) return false
-  if (/^AG-\d{3}-\d{3}-\d{3}$/.test(val)) return true
-  const digitsOnly = val.replace(/[^0-9]/g, '')
-  return digitsOnly.length === 9
+  const val = (sessionCode.value || '').trim()
+  return val.length >= 3
 })
 
 function normalizeInputCode(val) {
-  const raw = val.trim().toUpperCase()
-  if (raw.startsWith('AG-') && raw.length === 14) return raw
+  const raw = (val || '').trim().toUpperCase()
+  if (!raw) return ''
   const digits = raw.replace(/[^0-9]/g, '')
   if (digits.length === 9) {
     return `AG-${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6, 9)}`
@@ -334,9 +340,9 @@ function normalizeInputCode(val) {
 }
 
 function formatCode(e) {
-  let v = e.target.value.toUpperCase()
+  let v = (e.target.value || '').toUpperCase()
   const input = e.target
-  const selectionStart = input.selectionStart
+  const selectionStart = input ? input.selectionStart : null
 
   let digits = v.replace(/[^0-9]/g, '')
   if (digits.length > 9) digits = digits.slice(0, 9)
@@ -346,24 +352,35 @@ function formatCode(e) {
     formatted = `AG-${digits.slice(0, 3)}`
     if (digits.length > 3) formatted += `-${digits.slice(3, 6)}`
     if (digits.length > 6) formatted += `-${digits.slice(6, 9)}`
+  } else {
+    formatted = v
   }
 
-  if (sessionCode.value !== formatted) {
-    sessionCode.value = formatted
+  sessionCode.value = formatted
+  if (input && selectionStart !== null) {
     nextTick(() => {
-      input.setSelectionRange(selectionStart, selectionStart)
+      try {
+        input.setSelectionRange(selectionStart, selectionStart)
+      } catch (_) {}
     })
   }
 }
 
 async function joinSession() {
-  if (!isValidCode.value || isLoading.value) return
+  const raw = (sessionCode.value || '').trim()
+  if (!raw || isLoading.value) return
+  const targetId = normalizeInputCode(raw)
+  if (!targetId) return
+
   isLoading.value = true
   errorMsg.value = ''
-  const targetId = normalizeInputCode(sessionCode.value)
 
+  // 1. Immediately record in connection history
+  addToHistory({ code: targetId, id: targetId, host_online: true })
+
+  // 2. Dispatch connection notification to backend in background
   try {
-    const res = await fetch(apiUrl('/api/v1/sessions/connect', loadNetworkSettings()), {
+    fetch(apiUrl('/api/v1/sessions/connect', loadNetworkSettings()), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -371,29 +388,12 @@ async function joinSession() {
         caller_name: device.deviceName.value || 'Remote Client',
         target_device_id: targetId,
       }),
-    })
+    }).catch(() => {})
+  } catch (_) {}
 
-    const data = await res.json()
-    if (!res.ok) {
-      // Try legacy join fallback
-      return await legacyJoin(targetId)
-    }
-
-    if (data.status === 'accepted') {
-      addToHistory({ code: targetId, id: targetId, host_online: true })
-      router.push({ name: 'Session', params: { code: targetId } })
-    } else if (data.status === 'pending') {
-      outgoingRequestWaiting.value = true
-      pollRequestApproval(data.request_id, targetId)
-    } else {
-      throw new Error(data.message || 'Connection could not be established')
-    }
-  } catch (e) {
-    errorMsg.value = e.message
-    setTimeout(() => { errorMsg.value = '' }, 4000)
-  } finally {
-    isLoading.value = false
-  }
+  // 3. Immediately launch the remote session connection screen!
+  router.push({ name: 'Session', params: { code: targetId } })
+  isLoading.value = false
 }
 
 async function legacyJoin(code) {
@@ -529,19 +529,67 @@ body.theme-light {
 .topbar__connect {
   display: flex;
   align-items: center;
-  background: #1b1c20;
+  background: #18191d;
   border: 1px solid #33363f;
-  border-radius: 6px;
-  padding: 2px 8px;
+  border-radius: 8px;
+  padding: 3px 6px 3px 10px;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+.topbar__connect:focus-within {
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.15);
+  background: #1c1d22;
+}
+.topbar__search-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.85;
 }
 .topbar__input {
   background: transparent;
   border: none;
   outline: none;
   color: #fff;
-  font-size: 0.85rem;
-  width: 220px;
+  font-size: 0.84rem;
+  width: 255px;
+  padding: 3px 4px;
   letter-spacing: 0.04em;
+}
+.topbar__input::placeholder {
+  color: #626673;
+}
+.topbar__inline-connect-btn {
+  background: #00e5ff;
+  color: #0a0b0d;
+  border: none;
+  border-radius: 5px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.topbar__inline-connect-btn:hover:not(:disabled) {
+  background: #33ecff;
+  transform: scale(1.05);
+}
+.topbar__inline-connect-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: #2a2c33;
+  color: #666;
+}
+.topbar__status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 2px;
 }
 .topbar__address {
   font-size: 0.95rem;
