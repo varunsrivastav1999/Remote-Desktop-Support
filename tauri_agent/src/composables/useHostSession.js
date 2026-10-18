@@ -77,6 +77,10 @@ function createHostSession() {
 
       // Set listener for push connection requests
       device.setOnIncomingRequest((req) => {
+        if (req.callerDeviceId && req.callerDeviceId === sessionCode.value) {
+          console.warn('[HostSession] Ignored incoming request from self:', req.callerDeviceId)
+          return
+        }
         pendingController.value = true
         incomingCallerName.value = req.callerName
         incomingCallerId.value = req.callerDeviceId
@@ -141,9 +145,15 @@ function createHostSession() {
           ? 'Screen selected. Ready for incoming connections.'
           : 'Online. Screen access starts only after your approval.'
       } else if (message.type === 'peer_joined' && message.role === 'client') {
+        const callerId = message.caller_device_id || message.client_device_id || 'Remote Client'
+        if (callerId === sessionCode.value) {
+          console.warn('[HostSession] Ignored peer_joined from self:', callerId)
+          return
+        }
+
         pendingController.value = true
         incomingCallerName.value = message.caller_name || 'Remote Controller'
-        incomingCallerId.value = message.caller_device_id || message.client_device_id || 'Remote Client'
+        incomingCallerId.value = callerId
         state.value = 'approval'
         statusText.value = `A remote controller (${incomingCallerName.value}) is requesting access.`
 
@@ -189,6 +199,7 @@ function createHostSession() {
     if (!skipScreenCheck && !pendingController.value) return
     if (!screenShare.localStream.value && !await start()) return
     pendingController.value = false
+    device.clearIncomingRequest?.()
     controlEnabled.value = true
     state.value = 'connecting'
     statusText.value = 'Connecting approved controller...'
@@ -319,8 +330,9 @@ function createHostSession() {
   function denyController() {
     signaling.send({ type: 'permission_denied' })
     if (device.incomingRequest.value) {
-      device.rejectRequest(device.incomingRequest.value.requestId)
+      device.rejectRequest(device.incomingRequest.value.requestId).catch(() => {})
     }
+    device.clearIncomingRequest?.()
     pendingController.value = false
     state.value = screenShare.localStream.value ? 'waiting' : 'online'
     statusText.value = screenShare.localStream.value

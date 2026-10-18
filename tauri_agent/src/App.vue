@@ -187,7 +187,10 @@
                 </div>
 
                 <div class="st-group">
-                  <p class="st-hint">Permanent Device ID: <strong class="font-mono">{{ myAddress }}</strong></p>
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+                    <p class="st-hint" style="margin:0">Device ID: <strong class="font-mono">{{ myAddress }}</strong></p>
+                    <button class="btn btn--secondary btn--sm" @click="handleRollNewDeviceId" style="font-size:0.75rem; padding:4px 8px">Regenerate ID</button>
+                  </div>
                   <p class="st-hint">Device authentication uses SHA-256 tokens and constant-time comparison.</p>
                 </div>
               </div>
@@ -259,7 +262,17 @@ const { addToHistory } = useSessions()
 const hostSession = useHostSession()
 const nativeHost = isNativeApp()
 
-const hasIncomingRequest = computed(() => Boolean(device.incomingRequest.value || hostSession.pendingController.value))
+const hasIncomingRequest = computed(() => {
+  // If user is currently in a remote session as caller, never show incoming host request modal
+  if (router.currentRoute.value?.name === 'Session') return false
+  if (agentStatus.value === 'offline') return false
+
+  const req = device.incomingRequest.value
+  const callerId = req?.callerDeviceId || hostSession.incomingCallerId.value
+  if (callerId && callerId === device.deviceId.value) return false
+
+  return Boolean(req || hostSession.pendingController.value)
+})
 const incomingCallerName = computed(() => device.incomingRequest.value?.callerName || hostSession.incomingCallerName.value || 'Remote Controller')
 const incomingCallerId = computed(() => device.incomingRequest.value?.callerDeviceId || hostSession.incomingCallerId.value || 'Remote Peer')
 
@@ -385,6 +398,13 @@ async function joinSession() {
   const targetId = normalizeInputCode(raw)
   if (!targetId) return
 
+  // Prevent connecting to self
+  if (targetId === device.deviceId.value) {
+    errorMsg.value = 'Cannot connect to your own Device ID. Please enter another device ID.'
+    setTimeout(() => { errorMsg.value = '' }, 4000)
+    return
+  }
+
   isLoading.value = true
   errorMsg.value = ''
 
@@ -451,29 +471,47 @@ function cancelOutgoingRequest() {
 
 async function handleAcceptIncoming() {
   const req = device.incomingRequest.value
+  // Immediately dismiss the modal so it does not obstruct Chrome's screen picker!
+  device.clearIncomingRequest?.()
+  hostSession.pendingController.value = false
+
   try {
     if (req && req.requestId && !req.requestId.startsWith('direct-')) {
       await device.acceptRequest(req.requestId).catch(() => {})
     }
-    device.clearIncomingRequest?.()
+    // Navigate to host screen if not already there
+    if (router.currentRoute.value?.name !== 'Host') {
+      await router.push('/host')
+    }
     // Start host sharing session and initiate WebRTC offer immediately
     const ok = await hostSession.start()
     if (ok) {
       await hostSession.allowController(true)
+    } else {
+      errorMsg.value = 'Screen sharing was cancelled or not selected.'
+      setTimeout(() => { errorMsg.value = '' }, 4000)
     }
-    router.push('/host')
   } catch (e) {
-    errorMsg.value = 'Failed to accept request'
+    errorMsg.value = 'Failed to accept connection request'
+    setTimeout(() => { errorMsg.value = '' }, 4000)
   }
 }
 
 async function handleRejectIncoming() {
   const req = device.incomingRequest.value
+  device.clearIncomingRequest?.()
+  hostSession.pendingController.value = false
   if (req && req.requestId && !req.requestId.startsWith('direct-')) {
     await device.rejectRequest(req.requestId).catch(() => {})
   }
-  device.clearIncomingRequest?.()
   hostSession.denyController?.()
+}
+
+async function handleRollNewDeviceId() {
+  if (confirm('Generate a new Device ID for this browser tab/window?')) {
+    await device.resetDeviceId()
+    await hostSession.ensureOnline()
+  }
 }
 
 function copyAddress() {

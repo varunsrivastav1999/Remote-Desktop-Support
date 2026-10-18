@@ -30,17 +30,6 @@
         <span v-else class="preview__badge">You are sharing</span>
       </section>
     </div>
-
-    <div v-if="session.pendingController.value" class="approval-overlay">
-      <div class="approval-card">
-        <h2>Incoming control request</h2>
-        <p>A user with your address wants to view and control the shared screen.</p>
-        <div class="approval-actions">
-          <button class="btn btn--secondary" @click="session.denyController()">Deny</button>
-          <button class="btn btn--primary" @click="session.allowController()">{{ approvalButton }}</button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -117,9 +106,4 @@ onUnmounted(() => {
 .preview video { width:100%; height:100%; object-fit:contain; }
 .preview__empty { color:rgba(255,255,255,0.45); font-size:0.9rem; }
 .preview__badge { position:absolute; top:14px; left:14px; color:#fff; background:#d32f2f; padding:5px 10px; border-radius:20px; font-size:0.72rem; font-weight:600; }
-.approval-overlay { position:fixed; inset:42px 0 0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:80; }
-.approval-card { width:410px; padding:30px; border-radius:12px; background:var(--ad-surface); border:1px solid var(--ad-border); box-shadow:0 12px 32px rgba(0,0,0,0.35); }
-.approval-card h2 { font-size:1.1rem; margin-bottom:10px; }
-.approval-card p { font-size:0.86rem; line-height:1.6; color:var(--ad-text-muted); margin-bottom:24px; }
-.approval-actions { display:flex; justify-content:flex-end; gap:10px; }
 </style>

@@ -243,6 +243,10 @@ function copyMyId() {
 }
 
 function quickConnect(code) {
+  if (code && code === device.deviceId.value) {
+    alert('Cannot connect to your own Device ID. Please enter the Device ID of another computer.')
+    return
+  }
   router.push({ name: 'Session', params: { code } })
 }
 
@@ -253,6 +257,12 @@ function handleDirectConnect() {
   const digits = target.replace(/\D/g, '')
   if (digits.length === 9) {
     target = `AG-${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6, 9)}`
+  }
+
+  // Prevent connecting to self
+  if (target === device.deviceId.value) {
+    alert('Cannot connect to your own Device ID. Please enter the Device ID of another computer or open another browser tab.')
+    return
   }
 
   // Record in connection history

@@ -19,6 +19,16 @@ let deviceWs = null
 let wsReconnectTimer = null
 let wsReconnectAttempts = 0
 
+function getDeviceStorage() {
+  // In native desktop app (Tauri), persist permanently in localStorage.
+  // In web browsers (Chrome, Firefox, Edge), use sessionStorage so each browser tab
+  // gets its own independent Device ID, avoiding collision when testing in multiple tabs.
+  if (isNativeApp()) {
+    return localStorage
+  }
+  return sessionStorage
+}
+
 function hostPlatform() {
   const p = (navigator.userAgentData?.platform || navigator.platform || '').toLowerCase()
   if (p.includes('mac')) return 'macos'
@@ -28,37 +38,40 @@ function hostPlatform() {
 }
 
 function hostLabel() {
-  const custom = localStorage.getItem(DEVICE_NAME_KEY) || localStorage.getItem(LEGACY_NAME_KEY)
+  const storage = getDeviceStorage()
+  const custom = storage.getItem(DEVICE_NAME_KEY) || storage.getItem(LEGACY_NAME_KEY)
   if (custom) return custom
   const platform = hostPlatform().toUpperCase()
   return `${platform} Device`
 }
 
 function loadSavedCredentials() {
-  const savedId = (localStorage.getItem(DEVICE_ID_KEY) || localStorage.getItem(LEGACY_ID_KEY) || '').trim()
+  const storage = getDeviceStorage()
+  const savedId = (storage.getItem(DEVICE_ID_KEY) || storage.getItem(LEGACY_ID_KEY) || '').trim()
   // Only accept valid permanent AG-XXX-XXX-XXX format.
-  // If a stale legacy UUID (e.g. 83ff7f75-c0f7...) is in localStorage, discard it so backend allocates a proper AG ID.
+  // If a stale legacy UUID is stored, discard it so backend allocates a proper AG ID.
   if (/^AG-\d{3}-\d{3}-\d{3}$/.test(savedId)) {
     deviceId.value = savedId
-    deviceToken.value = localStorage.getItem(DEVICE_TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || ''
+    deviceToken.value = storage.getItem(DEVICE_TOKEN_KEY) || storage.getItem(LEGACY_TOKEN_KEY) || ''
   } else {
     deviceId.value = ''
     deviceToken.value = ''
-    localStorage.removeItem(DEVICE_ID_KEY)
-    localStorage.removeItem(LEGACY_ID_KEY)
-    localStorage.removeItem(DEVICE_TOKEN_KEY)
-    localStorage.removeItem(LEGACY_TOKEN_KEY)
+    storage.removeItem(DEVICE_ID_KEY)
+    storage.removeItem(LEGACY_ID_KEY)
+    storage.removeItem(DEVICE_TOKEN_KEY)
+    storage.removeItem(LEGACY_TOKEN_KEY)
   }
-  deviceName.value = localStorage.getItem(DEVICE_NAME_KEY) || localStorage.getItem(LEGACY_NAME_KEY) || hostLabel()
+  deviceName.value = storage.getItem(DEVICE_NAME_KEY) || storage.getItem(LEGACY_NAME_KEY) || hostLabel()
 }
 
 function saveCredentials(id, token, name) {
+  const storage = getDeviceStorage()
   deviceId.value = id
   deviceToken.value = token
   if (name) deviceName.value = name
-  localStorage.setItem(DEVICE_ID_KEY, id)
-  localStorage.setItem(DEVICE_TOKEN_KEY, token)
-  if (name) localStorage.setItem(DEVICE_NAME_KEY, name)
+  storage.setItem(DEVICE_ID_KEY, id)
+  storage.setItem(DEVICE_TOKEN_KEY, token)
+  if (name) storage.setItem(DEVICE_NAME_KEY, name)
 }
 
 /**
@@ -106,11 +119,12 @@ async function registerDevice() {
       }
 
       if (response.status === 400 || response.status === 422) {
-        // Clear stale credentials from localStorage and memory
-        localStorage.removeItem(DEVICE_ID_KEY)
-        localStorage.removeItem(LEGACY_ID_KEY)
-        localStorage.removeItem(DEVICE_TOKEN_KEY)
-        localStorage.removeItem(LEGACY_TOKEN_KEY)
+        // Clear stale credentials from storage and memory
+        const storage = getDeviceStorage()
+        storage.removeItem(DEVICE_ID_KEY)
+        storage.removeItem(LEGACY_ID_KEY)
+        storage.removeItem(DEVICE_TOKEN_KEY)
+        storage.removeItem(LEGACY_TOKEN_KEY)
         deviceId.value = ''
         deviceToken.value = ''
 
@@ -275,9 +289,14 @@ function setOnSessionStart(cb) {
 }
 
 function triggerIncomingRequest(req = {}) {
+  const callerId = req.callerDeviceId || 'Remote Client'
+  if (callerId && callerId === deviceId.value) {
+    console.warn('[Remote Desktop] Ignored incoming request from self:', callerId)
+    return
+  }
   incomingRequest.value = {
     requestId: req.requestId || 'direct-signaling',
-    callerDeviceId: req.callerDeviceId || 'Remote Client',
+    callerDeviceId: callerId,
     callerName: req.callerName || 'Remote Controller',
   }
   if (onIncomingRequestCallback) {
@@ -291,9 +310,14 @@ function clearIncomingRequest() {
 
 function handlePushMessage(msg) {
   if (msg.type === 'connection_request' || msg.type === 'client_waiting') {
+    const callerId = msg.caller_device_id || msg.caller_connection_id || 'Remote Client'
+    if (callerId && callerId === deviceId.value) {
+      console.warn('[Remote Desktop] Ignored incoming request from self:', callerId)
+      return
+    }
     incomingRequest.value = {
       requestId: msg.request_id || `direct-${msg.session_code || deviceId.value || 'peer'}`,
-      callerDeviceId: msg.caller_device_id || msg.caller_connection_id || 'Remote Client',
+      callerDeviceId: callerId,
       callerName: msg.caller_name || 'Remote Controller',
     }
     if (onIncomingRequestCallback) {
@@ -355,6 +379,25 @@ async function rejectRequest(requestId) {
 }
 
 /**
+ * Regenerate Device ID for this browser tab or app
+ */
+async function resetDeviceId() {
+  const storage = getDeviceStorage()
+  storage.removeItem(DEVICE_ID_KEY)
+  storage.removeItem(DEVICE_TOKEN_KEY)
+  storage.removeItem(LEGACY_ID_KEY)
+  storage.removeItem(LEGACY_TOKEN_KEY)
+  deviceId.value = ''
+  deviceToken.value = ''
+  stopHeartbeat()
+  if (deviceWs) {
+    try { deviceWs.close(1000) } catch (_) {}
+    deviceWs = null
+  }
+  return await registerDevice()
+}
+
+/**
  * Handle Network Change Event (Wi-Fi <-> Ethernet, DHCP IP change)
  */
 function handleNetworkChange() {
@@ -386,6 +429,7 @@ export function useDevice() {
     triggerIncomingRequest,
     clearIncomingRequest,
     registerDevice,
+    resetDeviceId,
     acceptRequest,
     rejectRequest,
     setOnIncomingRequest,
