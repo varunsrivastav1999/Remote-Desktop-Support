@@ -35,8 +35,20 @@ function hostLabel() {
 }
 
 function loadSavedCredentials() {
-  deviceId.value = localStorage.getItem(DEVICE_ID_KEY) || localStorage.getItem(LEGACY_ID_KEY) || ''
-  deviceToken.value = localStorage.getItem(DEVICE_TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || ''
+  const savedId = (localStorage.getItem(DEVICE_ID_KEY) || localStorage.getItem(LEGACY_ID_KEY) || '').trim()
+  // Only accept valid permanent AG-XXX-XXX-XXX format.
+  // If a stale legacy UUID (e.g. 83ff7f75-c0f7...) is in localStorage, discard it so backend allocates a proper AG ID.
+  if (/^AG-\d{3}-\d{3}-\d{3}$/.test(savedId)) {
+    deviceId.value = savedId
+    deviceToken.value = localStorage.getItem(DEVICE_TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || ''
+  } else {
+    deviceId.value = ''
+    deviceToken.value = ''
+    localStorage.removeItem(DEVICE_ID_KEY)
+    localStorage.removeItem(LEGACY_ID_KEY)
+    localStorage.removeItem(DEVICE_TOKEN_KEY)
+    localStorage.removeItem(LEGACY_TOKEN_KEY)
+  }
   deviceName.value = localStorage.getItem(DEVICE_NAME_KEY) || localStorage.getItem(LEGACY_NAME_KEY) || hostLabel()
 }
 
@@ -91,6 +103,39 @@ async function registerDevice() {
         startHeartbeat()
         connectDevicePushWs()
         return true
+      }
+
+      if (response.status === 400 || response.status === 422) {
+        // Clear stale credentials from localStorage and memory
+        localStorage.removeItem(DEVICE_ID_KEY)
+        localStorage.removeItem(LEGACY_ID_KEY)
+        localStorage.removeItem(DEVICE_TOKEN_KEY)
+        localStorage.removeItem(LEGACY_TOKEN_KEY)
+        deviceId.value = ''
+        deviceToken.value = ''
+
+        // Retry immediately requesting a fresh permanent Device ID
+        const retryRes = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            device_id: null,
+            auth_token: null,
+            name: hostLabel(),
+            platform: hostPlatform(),
+            agent_version: 'Remote Desktop Agent 1.0',
+            unattended_enabled: settings.unattendedEnabled || false,
+            pin: settings.unattendedPin || null,
+          }),
+        })
+        if (retryRes.ok) {
+          const freshData = await retryRes.json()
+          saveCredentials(freshData.device_id, freshData.auth_token, freshData.name)
+          deviceStatus.value = 'online'
+          startHeartbeat()
+          connectDevicePushWs()
+          return true
+        }
       }
     } catch (err) {
       lastError = err

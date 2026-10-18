@@ -1,75 +1,152 @@
 /* ═══════════════════════════════════════════════════════════
-   Remote Desktop — Design System
-   Clean white professional theme with red accents (AnyDesk-style)
-   Optimized for clarity & low-bandwidth visual simplicity
+   Remote Desktop Support — Design System
+   Sleek Dual Theme (Dark Carbon & Clean Slate Light)
    ═══════════════════════════════════════════════════════════ */
 
 /* ─── CSS Custom Properties ──────────────────────────────── */
 :root {
-  /* Base palette — WHITE theme */
-  --color-bg-page: #ffffff;
-  --color-bg-primary: #f8f9fb;
-  --color-bg-secondary: #f0f2f5;
-  --color-bg-tertiary: #e8ecf1;
-  --color-bg-elevated: #ffffff;
-  --color-bg-sidebar: #2b2b2b;
-  --color-bg-header: #333333;
+  /* Default: Dark Theme */
+  --ad-bg: #0d0f14;
+  --ad-sidebar: #13151c;
+  --ad-topbar: #101218;
+  --ad-surface: #181b24;
+  --ad-surface-hover: #212532;
+  --ad-surface-alt: #13151e;
+  --ad-border: #232734;
+  --ad-border-hover: #363d50;
 
-  /* Surface & Cards */
-  --surface-bg: #ffffff;
-  --surface-bg-hover: #f5f6f8;
-  --surface-border: #e0e4ea;
-  --surface-border-hover: #c5ccd6;
+  --ad-text: #f1f5f9;
+  --ad-text-secondary: #94a3b8;
+  --ad-text-muted: #64748b;
 
-  /* Accent colors — AnyDesk red style */
-  --color-accent-primary: #d32f2f;
-  --color-accent-primary-hover: #b71c1c;
-  --color-accent-primary-light: #ffebee;
-  --color-accent-blue: #1976d2;
-  --color-accent-green: #2e7d32;
-  --color-accent-green-light: #e8f5e9;
-  --color-accent-orange: #f57c00;
-  --color-accent-orange-light: #fff3e0;
-  --color-accent-red: #d32f2f;
-  --color-accent-red-light: #ffebee;
+  --ad-accent: #00e5ff;
+  --ad-accent-hover: #33ecff;
+  --ad-accent-glow: rgba(0, 229, 255, 0.22);
+  --ad-accent-subtle: rgba(0, 229, 255, 0.08);
 
-  /* Text */
-  --color-text-primary: #1a1a2e;
-  --color-text-secondary: #5a6070;
-  --color-text-muted: #8a92a0;
-  --color-text-accent: #d32f2f;
+  --ad-input-bg: #14161f;
+  --ad-input-border: #2c3142;
+  --ad-input-text: #ffffff;
+  --ad-input-placeholder: #5d6579;
+
+  --ad-status-online: #22c55e;
+  --ad-status-offline: #64748b;
+  --ad-status-waiting: #f59e0b;
+  --ad-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --ad-shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.3);
+
+  /* Shared / Component tokens */
+  --color-bg-page: var(--ad-bg);
+  --color-bg-primary: var(--ad-bg);
+  --color-bg-secondary: var(--ad-surface);
+  --color-bg-tertiary: var(--ad-surface-alt);
+  --color-bg-elevated: var(--ad-surface);
+  --color-bg-sidebar: var(--ad-sidebar);
+  --color-bg-header: var(--ad-topbar);
+
+  --surface-bg: var(--ad-surface);
+  --surface-bg-hover: var(--ad-surface-hover);
+  --surface-border: var(--ad-border);
+  --surface-border-hover: var(--ad-border-hover);
+
+  --color-accent-primary: var(--ad-accent);
+  --color-accent-primary-hover: var(--ad-accent-hover);
+  --color-accent-primary-light: var(--ad-accent-subtle);
+  --color-accent-blue: #0284c7;
+  --color-accent-green: #22c55e;
+  --color-accent-green-light: rgba(34, 197, 94, 0.15);
+  --color-accent-orange: #f59e0b;
+  --color-accent-orange-light: rgba(245, 158, 11, 0.15);
+  --color-accent-red: #ef4444;
+  --color-accent-red-light: rgba(239, 68, 68, 0.15);
+
+  --color-text-primary: var(--ad-text);
+  --color-text-secondary: var(--ad-text-secondary);
+  --color-text-muted: var(--ad-text-muted);
+  --color-text-accent: var(--ad-accent);
   --color-text-white: #ffffff;
 
-  /* Borders & Shadows */
   --border-radius-sm: 6px;
   --border-radius-md: 10px;
   --border-radius-lg: 14px;
   --border-radius-xl: 20px;
   --border-radius-full: 9999px;
 
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.10);
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
-  --shadow-card-hover: 0 6px 20px rgba(0, 0, 0, 0.12);
+  --shadow-sm: var(--ad-shadow-sm);
+  --shadow-md: var(--ad-shadow);
+  --shadow-card: var(--ad-shadow-sm);
+  --shadow-card-hover: var(--ad-shadow);
 
-  /* Typography */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 
-  /* Spacing */
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;
   --space-lg: 24px;
   --space-xl: 32px;
   --space-2xl: 48px;
-  --space-3xl: 64px;
 
-  /* Transitions */
   --transition-fast: 150ms ease;
   --transition-base: 250ms ease;
   --transition-slow: 400ms ease;
+}
+
+body.theme-light {
+  /* Light Theme */
+  --ad-bg: #f3f5f9;
+  --ad-sidebar: #f8fafc;
+  --ad-topbar: #ffffff;
+  --ad-surface: #ffffff;
+  --ad-surface-hover: #f8fafc;
+  --ad-surface-alt: #f1f4f9;
+  --ad-border: #e2e8f0;
+  --ad-border-hover: #cbd5e1;
+
+  --ad-text: #0f172a;
+  --ad-text-secondary: #334155;
+  --ad-text-muted: #64748b;
+
+  --ad-accent: #0284c7;
+  --ad-accent-hover: #0369a1;
+  --ad-accent-glow: rgba(2, 132, 199, 0.22);
+  --ad-accent-subtle: rgba(2, 132, 199, 0.08);
+
+  --ad-input-bg: #ffffff;
+  --ad-input-border: #cbd5e1;
+  --ad-input-text: #0f172a;
+  --ad-input-placeholder: #94a3b8;
+
+  --ad-status-online: #16a34a;
+  --ad-status-offline: #94a3b8;
+  --ad-status-waiting: #d97706;
+  --ad-shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
+  --ad-shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.05);
+
+  --color-bg-page: var(--ad-bg);
+  --color-bg-primary: var(--ad-bg);
+  --color-bg-secondary: var(--ad-surface);
+  --color-bg-tertiary: var(--ad-surface-alt);
+  --color-bg-elevated: var(--ad-surface);
+  --color-bg-sidebar: var(--ad-sidebar);
+  --color-bg-header: var(--ad-topbar);
+
+  --surface-bg: var(--ad-surface);
+  --surface-bg-hover: var(--ad-surface-hover);
+  --surface-border: var(--ad-border);
+  --surface-border-hover: var(--ad-border-hover);
+
+  --color-accent-primary: var(--ad-accent);
+  --color-accent-primary-hover: var(--ad-accent-hover);
+  --color-accent-primary-light: var(--ad-accent-subtle);
+  --color-accent-green-light: rgba(22, 163, 74, 0.12);
+  --color-accent-orange-light: rgba(217, 119, 6, 0.12);
+  --color-accent-red-light: rgba(239, 68, 68, 0.12);
+
+  --color-text-primary: var(--ad-text);
+  --color-text-secondary: var(--ad-text-secondary);
+  --color-text-muted: var(--ad-text-muted);
+  --color-text-accent: var(--ad-accent);
 }
 
 /* ─── Reset & Base ───────────────────────────────────────── */

@@ -1,0 +1,15 @@
+FROM alpine:3.19
+
+RUN apk add --no-cache \
+    git \
+    bash \
+    curl \
+    docker-cli \
+    docker-cli-compose
+
+WORKDIR /workspace
+
+COPY scripts/auto_updater.sh /usr/local/bin/auto_updater.sh
+RUN chmod +x /usr/local/bin/auto_updater.sh
+
+ENTRYPOINT ["/usr/local/bin/auto_updater.sh"]
