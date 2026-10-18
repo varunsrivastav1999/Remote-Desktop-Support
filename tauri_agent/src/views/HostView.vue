@@ -93,10 +93,6 @@ function leave() {
 }
 
 onMounted(async () => {
-  if (!nativeHost) {
-    router.replace('/')
-    return
-  }
   await session.ensureOnline()
   if (session.sessionCode.value) setHostedAddress(session.sessionCode.value, session.state.value)
 })

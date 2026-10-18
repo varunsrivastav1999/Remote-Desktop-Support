@@ -15,12 +15,26 @@ export function loadNetworkSettings() {
 }
 
 export function apiUrl(path, settings = loadNetworkSettings()) {
-  // When running in a standard web browser, always use relative path so Nginx reverse proxies it
+  const signalingServer = (settings?.signalingServer || '').trim()
+
+  // In browser: if no custom signaling server is configured, use relative path (proxied by Nginx)
   if (!isNativeApp()) {
-    return path
+    if (!signalingServer) {
+      return path
+    }
+    try {
+      const source = /^[a-z][a-z\d+\-.]*:\/\//i.test(signalingServer)
+        ? signalingServer
+        : `ws://${signalingServer}`
+      const parsed = new URL(source)
+      if (typeof window !== 'undefined' && parsed.host === window.location.host) {
+        return path
+      }
+    } catch (_) {
+      return path
+    }
   }
 
-  const signalingServer = (settings.signalingServer || '').trim()
   if (!signalingServer) {
     return path
   }
@@ -39,4 +53,5 @@ export function apiUrl(path, settings = loadNetworkSettings()) {
     return path
   }
 }
+
 

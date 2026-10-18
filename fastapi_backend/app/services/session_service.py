@@ -193,6 +193,7 @@ async def process_approval(
             mapping={
                 "session_id": session_id,
                 "session_token": session_token,
+                "host_token": host_auth_token,
                 "host_device_id": conn_req.target_device_id,
                 "client_device_id": conn_req.caller_device_id,
                 "created_at": now.isoformat(),
@@ -221,6 +222,16 @@ async def process_approval(
                 "request_id": request_id,
                 "target_device_id": conn_req.target_device_id,
                 "message": "Connection request rejected by remote host.",
+            }),
+        )
+        # Notify waiting client in signaling room directly
+        await redis_client.publish(
+            session_channel(conn_req.target_device_id),
+            json.dumps({
+                "connection_id": "system",
+                "sender_role": "host",
+                "target_role": "client",
+                "data": {"type": "permission_denied", "message": "Host rejected connection request."},
             }),
         )
 

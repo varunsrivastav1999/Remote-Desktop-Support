@@ -46,7 +46,6 @@ services:
       - --min-port=49160
       - --max-port=49200
       - --no-tls
-      - --no-dtls
     ports:
       - "3478:3478/tcp"
       - "3478:3478/udp"
@@ -126,6 +125,7 @@ services:
     environment:
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_POLL_INTERVAL=300
+      - DOCKER_API_VERSION=1.44
 
 volumes:
   postgres_data:

@@ -208,14 +208,33 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     elif token and expected_session and secrets.compare_digest(expected_session, token):
                         valid = True
 
+                    # Fallback: check device credentials directly in database
+                    if not valid and token:
+                        from app.database import async_session_factory
+                        from app.services.device_service import verify_device_token
+                        try:
+                            async with async_session_factory() as db:
+                                if await verify_device_token(db, code, token):
+                                    valid = True
+                                    await redis_client.hset(f"session:{code}", "host_token", token)
+                        except Exception as auth_err:
+                            logger.warning(f"DB credential verification failed for host {code}: {auth_err}")
+
                     if not valid:
                         await send_error("Host authentication failed.")
                         await websocket.close(code=4403, reason="Invalid host token")
                         break
-                elif not await redis_client.exists(peer_key("host")):
-                    await send_error("The remote desk is offline.")
-                    await websocket.close(code=4409, reason="Host offline")
-                    break
+                else:
+                    # requested_role == "client"
+                    # Notify host via device push channel that a client is waiting in room
+                    await redis_client.publish(
+                        f"channel:device:{code}",
+                        json.dumps({
+                            "type": "client_waiting",
+                            "session_code": code,
+                            "connection_id": connection_id,
+                        }),
+                    )
 
                 claimed = await redis_client.set(
                     peer_key(requested_role),
@@ -235,8 +254,15 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 other_role = "client" if role == "host" else "host"
                 await websocket.send_json({"type": "registered", "role": role})
 
+                # Check if other peer is already present in room
                 if await redis_client.exists(peer_key(other_role)):
                     await websocket.send_json({"type": "peer_joined", "role": other_role})
+                elif role == "client":
+                    # Inform client that signaling room is ready and waiting for host
+                    await websocket.send_json({
+                        "type": "waiting_for_host",
+                        "message": "Waiting for remote host to start stream...",
+                    })
 
                 await publish_event(
                     role,

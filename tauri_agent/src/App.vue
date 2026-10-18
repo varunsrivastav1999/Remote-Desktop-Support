@@ -450,8 +450,11 @@ async function handleAcceptIncoming() {
   if (!req) return
   try {
     await device.acceptRequest(req.requestId)
-    // Start host sharing session immediately
-    await hostSession.start()
+    // Start host sharing session and initiate WebRTC offer immediately
+    const ok = await hostSession.start()
+    if (ok) {
+      await hostSession.allowController(true)
+    }
     router.push('/host')
   } catch (e) {
     errorMsg.value = 'Failed to accept request'

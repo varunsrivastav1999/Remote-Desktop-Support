@@ -142,7 +142,9 @@ async def run_tests():
         assert approved_req.status == "accepted"
         assert approved_session is not None
         assert approved_session.session_token is not None
-        print(f"Request accepted! Session token: {approved_session.session_token[:8]}...")
+        session_hash = mock_redis.hashes.get(f"session:{dev_b.id}")
+        assert session_hash is not None and session_hash.get("host_token") == token_b
+        print(f"Request accepted! Session token: {approved_session.session_token[:8]}..., Host token verified in Redis")
 
     print("\n--- [TEST 6] Testing Unattended Access with PIN ---")
     async with async_session_factory() as db:

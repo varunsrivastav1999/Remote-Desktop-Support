@@ -102,6 +102,17 @@ async def device_heartbeat(
     redis_client = get_redis(request)
     await record_heartbeat(db, redis_client, norm_id, ip=payload.ip or client_ip, platform=payload.platform)
 
+    # Ensure session room key has host_token and is refreshed
+    await redis_client.hset(
+        f"session:{norm_id}",
+        mapping={
+            "status": "waiting",
+            "device_id": norm_id,
+            "host_token": payload.auth_token,
+        },
+    )
+    await redis_client.expire(f"session:{norm_id}", 86400)
+
     from datetime import datetime, timezone
     return HeartbeatResponse(
         status="ok",

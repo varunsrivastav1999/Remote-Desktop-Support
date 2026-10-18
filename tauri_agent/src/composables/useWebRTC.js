@@ -204,8 +204,14 @@ export function useWebRTC(signaling) {
           } else {
             iceCandidateQueue.push(msg.candidate)
           }
+        } else if (msg.type === 'waiting_for_host') {
+          console.log('[WebRTC] Signaling room ready, waiting for remote host to start stream...')
+          connectionState.value = 'connecting'
         } else if (msg.type === 'peer_joined') {
           console.log(`[WebRTC] Peer joined as ${msg.role}`)
+          if (msg.role === 'host') {
+            connectionState.value = 'connecting'
+          }
         } else if (msg.type === 'peer_left') {
           console.log(`[WebRTC] Peer left (${msg.role})`)
           connectionState.value = 'disconnected'
