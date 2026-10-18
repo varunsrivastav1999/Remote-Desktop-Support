@@ -1,7 +1,0 @@
-from django.apps import AppConfig
-
-
-class SignalingConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'signaling'
-    verbose_name = 'WebRTC Signaling'

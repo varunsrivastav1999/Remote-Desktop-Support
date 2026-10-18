@@ -1,170 +1,245 @@
-# Remote Support Platform
+# Remote Desktop Support — Production-Grade Self-Hosted Remote Desktop
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Status](https://img.shields.io/badge/status-Production-success.svg)
+**Remote Desktop Support** is a modern, high-performance, self-hosted remote desktop application inspired by AnyDesk and RustDesk. It allows two computers to connect seamlessly using a permanent, hardware-independent **Device ID** (`AG-XXX-XXX-XXX`), establishing direct peer-to-peer **WebRTC** sessions for low-latency screen control, interactive terminal access, bidirectional clipboard sync, and file transfer.
 
-An open-source, high-performance remote desktop support platform designed as a lightweight alternative to commercial tools like AnyDesk and TeamViewer. This platform offers a beautiful, low-latency web interface that allows technicians to connect to and manage remote devices globally over the internet.
+---
 
-## Features
+## 1. System Architecture
 
-- ⚡ **Low-Latency Signaling**: Built on Django Channels for sub-millisecond WebSocket connection routing.
-- 🎨 **Premium UI**: A sleek, AnyDesk-style interface with a built-in Dark/Light mode and responsive dashboard.
-- 💻 **In-Browser Terminal**: A fully functional, `xterm.js` based SSH terminal embedded directly in the browser for remote administration.
-- 🗄️ **Persistent Sessions**: Support for custom aliases, favorite tagging, and seamless reconnects managed via PostgreSQL.
-- 🔒 **Advanced Settings**: Highly customizable settings featuring Privacy Mode, Wake-on-LAN toggles, TCP Tunneling, and Key-based authentication support.
-- 🐳 **Docker Ready**: Deploy anywhere in seconds with a fully containerized architecture.
+```text
+Remote Desktop Support Server Stack
+┌────────────────────────────────────────────────────────────────────────┐
+│  FastAPI Backend (Async SQLAlchemy + Redis PubSub)                     │
+│  - Device Registry & Permanent AG-XXX-XXX-XXX ID Allocation            │
+│  - Presence & Heartbeat Engine (Redis TTL + DB Tracking)               │
+│  - Session Authorization & Unattended PIN Verification                 │
+│  - Push Notifications & WebRTC Signaling Dispatch                      │
+│                                                                        │
+│  PostgreSQL (Persistent Storage)  │  Redis (Real-time Presence)        │
+│  Coturn (TURN/STUN Relay)         │  Nginx (Web Controller UI)         │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                       WebSocket / HTTPS Signaling
+                                    │
+          ┌─────────────────────────┴─────────────────────────┐
+          │                                                   │
+    Computer A (Client)                                 Computer B (Host)
+Device ID: AG-482-193-721                           Device ID: AG-735-281-904
+          │                                                   │
+          └══════════════ Direct WebRTC P2P ══════════════════┘
+             (LAN / Internet STUN / Fallback to Coturn TURN)
+             • Encrypted VP8/VP9/H.264 Video Stream
+             • Mouse & Keyboard Input Injection (Rust Native)
+             • Bidirectional Clipboard Synchronization
+             • Interactive Remote Shell / Terminal Channel
+             • P2P Secure File Transfer Channel
+```
 
-## System Architecture
+---
 
-The platform consists of three main components:
+## 2. Key Features
 
-1. **Frontend Web Client (Vue.js + Vite)**: The technician dashboard. Runs entirely in the browser, offering a control panel, session management, WebRTC viewers, and SSH terminal access.
-2. **Signaling Server (Django + Channels)**: The backend broker. Manages database persistence (PostgreSQL), REST APIs, and WebSocket signaling to negotiate P2P connections between the technician and the host.
-3. **Host Agent (Python/C++)**: A lightweight daemon installed on the remote machine that captures the screen, executes input commands, and establishes the reverse connection to the signaling server.
+- **Permanent Device ID (`AG-XXX-XXX-XXX`):** Securely generated, persistent across reboots, DHCP changes, router switches, and Wi-Fi $\leftrightarrow$ Ethernet transitions.
+- **Direct P2P WebRTC Transmission:** Media and control data flow directly between peers without passing through the server when direct connection is achievable.
+- **Coturn TURN Fallback:** Transparent relay fallback for symmetric NATs and restricted enterprise firewalls.
+- **Live Consent & Unattended Access:**
+  - **Attended Mode:** Host receives an incoming connection request popup with `[ ACCEPT ]` and `[ REJECT ]` buttons.
+  - **Unattended Mode:** Optional Argon2/PBKDF2-hashed security PIN allows trusted remote access without local user interaction.
+- **Native Input Injection:** Rust-powered mouse movement, multi-button clicks, scrolling, keyboard input, and OS shortcuts.
+- **Interactive Shell / Terminal:** Direct terminal streaming over an authenticated WebRTC data channel without exposing SSH port 22 publicly.
+- **Secure File Transfer:** Chunked binary transfer with path-traversal prevention, progress tracking, and size limits.
+- **Resilient Reconnection:** Automatic exponential backoff, WebSocket session recovery, and WebRTC ICE restarts on network interruptions.
+- **Zero Proprietary Dependencies:** 100% self-hosted; no reliance on AnyDesk, TeamViewer, Chrome Remote Desktop, or Firebase.
 
-## Quick Start (Zero-Config Global Deployment) 🌍
+---
 
-We provide a streamlined Docker Compose setup that spins up the platform and automatically creates a **Cloudflare Edge Tunnel**, allowing you to access it securely from anywhere in the world without any router configuration!
+## 3. Quick Start (Self-Hosted Server)
 
 ### Prerequisites
-- Docker & Docker Compose
+- Docker Engine $\ge$ 20.10 & Docker Compose $\ge$ 2.0
+- Ports available: `8000` (FastAPI), `5173` (Web UI), `5433` (Postgres host mapping), `6379` (Redis), `3478` (Coturn STUN/TURN)
 
-### Deployment Steps
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/your-org/remote-support.git
-   cd remote-support
-   ```
-
-2. **Start the Production Services:**
-   Run the following command to build and launch the Postgres database, Redis broker, Django backend, Nginx frontend, and Cloudflare Tunnel:
-   ```bash
-   docker-compose up -d --build
-   ```
-
-3. **Get Your Global Access URL:**
-   The Cloudflare tunnel automatically generates a secure, public HTTPS link for your platform. Retrieve it from the logs:
-   ```bash
-   docker-compose logs cloudflare_tunnel | grep trycloudflare
-   ```
-   *(Look for a URL like `https://some-random-words.trycloudflare.com`)*
-
-4. **Access the Dashboard:**
-   Open the URL from Step 3 in any web browser, from anywhere in the world!
-
-## Local Network Setup (Two Laptops on Same Wi-Fi)
-
-Run Docker on the server laptop, then open the dashboard from either laptop:
-
+### Launch Server Stack
 ```bash
+# Clone the repository
+git clone https://github.com/varunsrivastav1999/Remote-Desktop-Support.git
+cd Remote-Desktop-Support
+
+# Copy environment configuration
+cp .env.example .env
+
+# Start all backend and controller services
 docker compose up -d --build
 ```
 
-Find the server laptop IP address:
-
+### Verify Running Services
 ```bash
-ipconfig getifaddr en0
-# If that is empty, use:
-ifconfig | grep "inet "
+docker compose ps
+curl http://localhost:8000/health
+```
+Expected output:
+```json
+{"status":"ok","service":"Remote Desktop Support Server","redis":"connected","database":"connected"}
 ```
 
-Open the web app from laptop 2:
+---
 
-```text
-http://<server-laptop-ip>:5173/
-```
+## 4. Native Host Agent Setup
 
-Run the host agent on the laptop you want to control:
+The native host agent runs on machines being controlled or connecting. It owns OS capture, display streaming, and accessibility injection permissions.
 
+### Prerequisites
+- Node.js $\ge$ 18 & npm
+- Rust $\ge$ 1.75 (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+- Platform dependencies:
+  - **macOS:** Grant *Screen Recording* and *Accessibility* permissions in System Settings.
+  - **Linux:** `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
+  - **Windows:** Standard build tools (C++ desktop development workload).
+
+### One-Command Launch (Docker + PM2 Tauri Agent)
+To bring up the entire Docker stack and automatically launch the Tauri Host Agent in the background using PM2:
 ```bash
-cd host_agent
-python3 agent.py --server http://<server-laptop-ip>:8000
+./start.sh
 ```
+This runs:
+1. `docker compose up -d` (PostgreSQL, Redis, Coturn, FastAPI Backend, Web App)
+2. Waits for the backend healthcheck (`http://localhost:8000/health`)
+3. Launches the Tauri host agent with PM2 via `ecosystem.config.js`
 
-Use the session code printed by the host agent in the web dashboard. Full desktop sharing and keyboard/mouse control require the Python host agent to be running on the target machine.
-
-Leave the HTTP Proxy field empty for normal home/office Wi-Fi. It is only for networks where web traffic must go through a corporate proxy.
-
-### Local Smoke Tests
-
-Check that laptop 2 can reach the backend:
-
+To manage the background agent:
 ```bash
-curl http://<server-laptop-ip>:8000/api/sessions/
+# View live logs
+npx pm2 logs remote-support-agent
+
+# View process status
+npx pm2 status
+
+# Stop everything (PM2 agent + Docker containers)
+./stop.sh
 ```
 
-Check Django admin CSS/static files:
-
+### Running Host Agent Manually in Development
 ```bash
-curl -I http://<server-laptop-ip>:8000/static/admin/css/base.css
+cd tauri_agent
+npm install
+npm run tauri dev
 ```
 
-Check that the web dashboard can proxy WebSocket traffic by joining a real host-agent session from `http://<server-laptop-ip>:5173/`.
-
-## Networking & Advanced Global Connectivity
-
-To achieve a seamless connection over the internet and through strict firewalls (like AnyDesk or RustDesk), you have two options:
-
-### Option 1: The Built-in Cloudflare Tunnel (Recommended)
-By default, the `docker-compose.yml` stack uses Cloudflare's enterprise edge network (`cloudflared`) to tunnel your local traffic to the world. It provides native WebSocket support and zero-trust security without opening any ports on your local router.
-
-To use the host agent over this tunnel:
+### Building Production Installers
 ```bash
-cd host_agent
-python3 agent.py --server https://<your-cloudflare-url>.trycloudflare.com
+cd tauri_agent
+npm run tauri build
 ```
+Built binaries and native bundles are created in `tauri_agent/src-tauri/target/release/bundle/`:
+- **macOS:** `.dmg` / `.app`
+- **Linux:** `.deb` / `.AppImage`
+- **Windows:** `.msi` / `.exe`
 
-### Option 2: Dedicated Cloud VPS Deployment
-If you are deploying this to a permanent cloud server (e.g., DigitalOcean, AWS), you should map a custom domain to it.
+---
 
-1.  **Public Signaling Server**: Ensure the `backend` service is deployed on a server with a public IP or a domain name.
-2.  **STUN/TURN Servers**: In many internet environments (Symmetric NAT), direct P2P connection fails. You must configure a **TURN Server** (e.g., Coturn) in the **Settings > Network** tab of the dashboard.
-3.  **ICE Candidates**: The platform automatically exchanges ICE candidates to find the most efficient path between the technician and the host agent.
-4.  **Security**: Use HTTPS/WSS for all production traffic to ensure your signaling data and remote sessions are encrypted.
+## 5. Connection Workflow
 
-Example internet environment:
+### Attended Support Flow
+1. **Host (Computer B):** Starts Remote Desktop Support. The app generates or restores its permanent Device ID (e.g. `AG-735-281-904`) and registers with the backend.
+2. **Controller (Computer A):** Enters `AG-735-281-904` and clicks **CONNECT**.
+3. **Backend:** Locates Computer B, checks online presence, and pushes a connection request via WebSocket `/ws/device/AG-735-281-904`.
+4. **Host (Computer B):** Displays incoming connection popup:
+   ```text
+   Incoming Connection Request
+   Origin: Computer A (AG-482-193-721)
+   [ ACCEPT ]   [ REJECT ]
+   ```
+5. **Session Established:** Upon acceptance, an authenticated session token is created, WebRTC SDP offer/answer exchange occurs, and the direct peer-to-peer connection is opened.
 
-```env
-DJANGO_ALLOWED_HOSTS=support.example.com
-CORS_ALLOW_ALL_ORIGINS=False
-CORS_ALLOWED_ORIGINS=https://support.example.com
-CSRF_TRUSTED_ORIGINS=https://support.example.com
-```
+### Unattended Access Flow
+1. **Host:** Configures an Unattended Access PIN in **Settings > Security**. The PIN is hashed using PBKDF2-HMAC-SHA256 (100,000 iterations) with a cryptographic salt before backend synchronization.
+2. **Controller:** Enters the remote Device ID and PIN. The backend validates the hash and auto-approves the session without requiring local interaction.
 
-Host agent with TURN:
+---
 
+## 6. Network Change & Reconnection Resilience
+
+Remote Desktop Support is engineered for real-world network fluctuations:
+- **DHCP / IP Address Changes:** The Device ID (`AG-XXX-XXX-XXX`) remains invariant. When an IP changes, the agent detects the network event, updates its presence on the backend, and gathers fresh ICE candidates.
+- **Wi-Fi $\leftrightarrow$ Ethernet Switching:** The WebRTC layer detects connection state drops and initiates an **ICE Restart** without dropping the application session.
+- **Backend or Network Downtime:** Both host and client employ exponential backoff reconnect algorithms (`1s` $\to$ `2s` $\to$ `4s` $\to$ max `30s`) to resume signaling immediately when connectivity returns.
+
+---
+
+## 7. Interactive Terminal & File Transfer
+
+### Terminal / Shell
+- **Zero Port 22 Exposure:** The interactive shell operates strictly inside the established WebRTC encrypted peer channel.
+- **Native Process Integration:** Spawns a shell (`/bin/sh`, `$SHELL`, or `cmd.exe`) on the host machine, piping stdin/stdout/stderr to an xterm.js terminal panel.
+- **Security:** Requires explicit session authorization; commands cannot be injected outside of active, authenticated sessions.
+
+### File Transfer
+- **Direct P2P Data Channel:** Transfers bypass the server entirely.
+- **Path Traversal Protection:** All directory listings and file operations enforce strict path sandboxing.
+- **Visual Progress:** Features live speed metrics, progress bars, and upload/download cancellation.
+
+---
+
+## 8. Configuration Reference (`.env`)
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `POSTGRES_USER` | `rsadmin` | Database username |
+| `POSTGRES_PASSWORD` | `support_2026` | Database password |
+| `POSTGRES_DB` | `remote_support` | Database name |
+| `POSTGRES_HOST_PORT` | `5433` | Host-mapped PostgreSQL port (avoids conflict with local port 5432) |
+| `REDIS_URL` | `redis://redis:6379/0` | Redis connection URL |
+| `DATABASE_URL` | `postgresql+asyncpg://...` | Async SQLAlchemy database URL |
+| `SESSION_TTL_SECONDS` | `2592000` | Device registration TTL (30 days) |
+| `CORS_ALLOWED_ORIGINS` | `*` | Allowed CORS origins for Web UI |
+| `STUN_SERVERS` | `stun:stun.l.google.com:19302` | Public STUN servers for NAT discovery |
+| `TURN_SERVER` | `turn:your-server:3478` | Public Coturn relay server URL |
+| `TURN_USERNAME` | `remote` | Coturn authentication username |
+| `TURN_PASSWORD` | `support_2026` | Coturn authentication password |
+| `TURN_REALM` | `remote-support.local` | Coturn authentication realm |
+
+---
+
+## 9. Verification & Automated Testing
+
+### Backend & Database Tests
+Run the comprehensive 7-stage backend integration test suite inside Docker:
 ```bash
-python3 agent.py \
-  --server https://support.example.com \
-  --turn-server turn:turn.example.com:3478?transport=udp \
-  --turn-username <user> \
-  --turn-password <password>
+docker compose run --rm backend python tests/test_api.py
 ```
+Test suite covers:
+1. PostgreSQL schema creation & table migrations
+2. Device ID format generation & string normalization
+3. Host agent registration & token verification
+4. Redis heartbeat, presence TTL, and last-seen updates
+5. Connection request lifecycle (`pending` $\to$ `accepted` $\to$ `active`)
+6. Unattended access PIN hash validation
+7. FastAPI REST endpoints (`/health`, `/api/v1/devices/*`, `/api/v1/sessions/*`)
 
-The Docker stack includes an optional free Coturn relay on port `3478` with UDP relay ports `49160-49200`. On a public server, open/forward these ports and set the same values in the dashboard's Network tab:
-
-```text
-TURN server: turn:<server-ip-or-domain>:3478?transport=udp
-TURN username: remote
-TURN password: support@2026
-```
-
-Set `TURN_EXTERNAL_IP` in `.env` to the LAN IP for same-Wi-Fi relay testing, or to the server's public IP on a VPS.
-
-For the host agent, use matching CLI values or environment variables:
-
+### Frontend Build & Typecheck
 ```bash
-REMOTE_SUPPORT_TURN_SERVERS=turn:<server-ip-or-domain>:3478?transport=udp \
-REMOTE_SUPPORT_TURN_USERNAME=remote \
-REMOTE_SUPPORT_TURN_PASSWORD=support@2026 \
-python3 agent.py --server https://support.example.com
+cd tauri_agent
+npm run build
 ```
 
-## Contributing
+### Native Rust Engine Check
+```bash
+cd tauri_agent/src-tauri
+cargo check
+```
 
-We welcome contributions from the community! Whether you are fixing bugs, proposing features, or optimizing the codebase, please open a pull request or an issue. Ensure your code adheres to standard Vue/Django style guidelines.
+---
 
-## License
+## 10. Security Model
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+- **Permanent Identity Separation:** Device IDs are routing identifiers, not authentication tokens. Possession of a Device ID alone grants zero access.
+- **Mandatory Approval:** Every connection requires either interactive approval from the host user or validation against a salted, hashed PIN.
+- **End-to-End Encryption:** All WebRTC video, input events, clipboard data, terminal I/O, and files are encrypted using DTLS-SRTP and SCTP.
+- **Audit Logging:** Every connection request, approval, rejection, and session termination is permanently logged in the PostgreSQL `audit_logs` table.
+- **Safe Clipboard Sync:** Clipboard text synchronization enforces strict payload limits (max 64 KB) and filters arbitrary binary payloads.
+
+---
+
+## 11. License
+
+MIT License. See [LICENSE](LICENSE) for details.

@@ -1,23 +1,25 @@
+name: remote-desktop-support
+
 services:
-  # ─── PostgreSQL Database ───────────────────────────────────
-  db:
+  # PostgreSQL Database for Device Registry, Credentials, Sessions, and Audit Logs
+  postgres:
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: rsadmin
-      POSTGRES_PASSWORD: support@2026
-      POSTGRES_DB: remote_support
+      POSTGRES_USER: ${POSTGRES_USER:-rsadmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-support_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-remote_support}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rsadmin -d remote_support"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rsadmin} -d ${POSTGRES_DB:-remote_support}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # ─── Redis (Channels Layer) ───────────────────────────────
+  # Redis for real-time presence, temporary signaling pub/sub, and heartbeat TTL
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -29,7 +31,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ─── TURN Relay (Optional, AnyDesk/RustDesk-style fallback) ─────────
+  # TURN relay for networks where direct peer-to-peer WebRTC cannot connect
   turn:
     image: coturn/coturn:latest
     restart: unless-stopped
@@ -38,7 +40,7 @@ services:
       - --log-file=stdout
       - --lt-cred-mech
       - --realm=${TURN_REALM:-remote-support.local}
-      - --user=${TURN_USERNAME:-remote}:${TURN_PASSWORD:-support@2026}
+      - --user=${TURN_USERNAME:-remote}:${TURN_PASSWORD:-support_2026}
       - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
       - --listening-port=3478
       - --min-port=49160
@@ -50,48 +52,53 @@ services:
       - "3478:3478/udp"
       - "49160-49200:49160-49200/udp"
 
-  # ─── Django Backend (ASGI via Daphne) ─────────────────────
+  # FastAPI REST and WebSocket Signaling Server
   backend:
-    build: ./backend
+    build: ./fastapi_backend
     restart: unless-stopped
-    command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py collectstatic --noinput &&
-             daphne -b 0.0.0.0 -p 8000 remote_desktop_prj.asgi:application"
-    env_file: .env
-    volumes:
-      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-rsadmin}:${POSTGRES_PASSWORD:-support_2026}@postgres:5432/${POSTGRES_DB:-remote_support}
+      - REDIS_URL=redis://redis:6379/0
+      - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-2592000}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
     ports:
       - "8000:8000"
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/sessions/"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 5s
 
-  # ─── Vue.js Frontend (Nginx Production Build) ─────────────
-  frontend:
-    build: ./frontend
+  # Remote Desktop Support Web Controller & Reverse Proxy
+  app:
+    build: ./tauri_agent
     restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "5173:80"
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
-  # ─── Cloudflare Tunnel (Zero-Config Global Access) ──────────
+  # Optional public tunnel for testing outside LAN
   cloudflare_tunnel:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --url http://frontend:5173 --no-autoupdate
+    command: tunnel --url http://app:80 --no-autoupdate
     depends_on:
-      - frontend
+      app:
+        condition: service_healthy
 
 volumes:
-  pg_data:
+  postgres_data:
