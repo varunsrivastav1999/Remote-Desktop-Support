@@ -260,12 +260,27 @@ function setOnSessionStart(cb) {
   onSessionStartCallback = cb
 }
 
+function triggerIncomingRequest(req = {}) {
+  incomingRequest.value = {
+    requestId: req.requestId || 'direct-signaling',
+    callerDeviceId: req.callerDeviceId || 'Remote Client',
+    callerName: req.callerName || 'Remote Controller',
+  }
+  if (onIncomingRequestCallback) {
+    onIncomingRequestCallback(incomingRequest.value)
+  }
+}
+
+function clearIncomingRequest() {
+  incomingRequest.value = null
+}
+
 function handlePushMessage(msg) {
-  if (msg.type === 'connection_request') {
+  if (msg.type === 'connection_request' || msg.type === 'client_waiting') {
     incomingRequest.value = {
-      requestId: msg.request_id,
-      callerDeviceId: msg.caller_device_id,
-      callerName: msg.caller_name || 'Remote Client',
+      requestId: msg.request_id || 'direct-signaling',
+      callerDeviceId: msg.caller_device_id || msg.caller_connection_id || 'Remote Client',
+      callerName: msg.caller_name || 'Remote Controller',
     }
     if (onIncomingRequestCallback) {
       onIncomingRequestCallback(incomingRequest.value)
@@ -354,6 +369,8 @@ export function useDevice() {
     deviceName,
     deviceStatus: readonly(deviceStatus),
     incomingRequest: readonly(incomingRequest),
+    triggerIncomingRequest,
+    clearIncomingRequest,
     registerDevice,
     acceptRequest,
     rejectRequest,

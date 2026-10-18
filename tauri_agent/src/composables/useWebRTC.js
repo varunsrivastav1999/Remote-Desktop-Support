@@ -15,15 +15,7 @@
  */
 
 import { ref, readonly, reactive } from 'vue'
-
-// Public STUN servers for NAT traversal
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-]
+import { getDefaultIceServers } from './serverConfig.js'
 
 export function useWebRTC(signaling) {
   const peerConnection = ref(null)
@@ -34,6 +26,8 @@ export function useWebRTC(signaling) {
   const connectionState = ref('new')    // new | connecting | connected | disconnected | failed
   const iceState = ref('new')
   const dataChannelState = ref('closed') // closed | connecting | open
+  const offerReceived = ref(false)
+  const waitingForHost = ref(true)
 
   // ─── Authentication ──────────────────────────────────────
   const authRequired = ref(false)
@@ -80,23 +74,7 @@ export function useWebRTC(signaling) {
   function initAsClient(customSettings = {}) {
     console.log('[WebRTC] Initializing as CLIENT')
 
-    const iceServers = [...ICE_SERVERS]
-    if (customSettings.stunServers) {
-      customSettings.stunServers.split('\n').forEach(s => {
-        if (s.trim()) iceServers.push({ urls: s.trim() })
-      })
-    }
-    if (customSettings.turnServers) {
-      customSettings.turnServers.split('\n').forEach(s => {
-        if (s.trim()) {
-          const turnServer = { urls: s.trim() }
-          if (customSettings.turnUsername) turnServer.username = customSettings.turnUsername
-          if (customSettings.turnPassword) turnServer.credential = customSettings.turnPassword
-          iceServers.push(turnServer)
-        }
-      })
-    }
-
+    const iceServers = getDefaultIceServers(customSettings)
     const rtcConfig = { iceServers }
     if (customSettings.alwaysRelay) {
       rtcConfig.iceTransportPolicy = 'relay'
@@ -176,6 +154,8 @@ export function useWebRTC(signaling) {
       try {
         if (msg.type === 'offer') {
           console.log('[WebRTC] Received SDP offer, creating answer...')
+          offerReceived.value = true
+          waitingForHost.value = false
 
           await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
 
@@ -563,6 +543,8 @@ export function useWebRTC(signaling) {
     currentMonitor: readonly(currentMonitor),
     currentQuality: readonly(currentQuality),
     fileChannel: readonly(fileChannel),
+    offerReceived: readonly(offerReceived),
+    waitingForHost: readonly(waitingForHost),
     initAsClient,
     sendControl,
     sendAuth,

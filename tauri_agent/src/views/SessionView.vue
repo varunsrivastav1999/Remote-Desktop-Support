@@ -35,6 +35,7 @@
         :ice-state="webrtc.iceState.value"
         :session-code="code"
         :signaling-connected="signaling.isConnected.value"
+        :offer-received="webrtc.offerReceived.value"
       />
 
       <!-- Stats Overlay -->

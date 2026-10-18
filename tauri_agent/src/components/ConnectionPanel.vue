@@ -29,17 +29,38 @@
 <script setup>
 import { computed } from 'vue'
 const props = defineProps({
-  state:{type:String,default:'new'}, iceState:{type:String,default:'new'},
-  sessionCode:{type:String,default:''}, signalingConnected:{type:Boolean,default:false},
+  state: { type: String, default: 'new' },
+  iceState: { type: String, default: 'new' },
+  sessionCode: { type: String, default: '' },
+  signalingConnected: { type: Boolean, default: false },
+  offerReceived: { type: Boolean, default: false },
 })
-const statusDotClass = computed(() => ({connected:'status-dot--connected',failed:'status-dot--offline',disconnected:'status-dot--offline'}[props.state]||'status-dot--waiting'))
-const title = computed(() => ({connected:'Connected!',connecting:'Establishing Connection...',failed:'Connection Failed',disconnected:'Disconnected'}[props.state]||'Connecting to Host...'))
-const subtitle = computed(() => ({connected:'Remote screen is now visible.',connecting:'Negotiating peer-to-peer connection...',failed:'Could not connect. Check network.',disconnected:'The remote host disconnected.'}[props.state]||'Waiting for host agent...'))
+const statusDotClass = computed(() => ({
+  connected: 'status-dot--connected',
+  failed: 'status-dot--offline',
+  disconnected: 'status-dot--offline'
+}[props.state] || 'status-dot--waiting'))
+
+const title = computed(() => ({
+  connected: 'Connected!',
+  connecting: 'Establishing Connection...',
+  failed: 'Connection Failed',
+  disconnected: 'Disconnected'
+}[props.state] || 'Connecting to Host...'))
+
+const subtitle = computed(() => {
+  if (props.state === 'connected') return 'Remote screen is now visible.'
+  if (props.state === 'failed') return 'Could not connect. Check network.'
+  if (props.state === 'disconnected') return 'The remote host disconnected.'
+  if (!props.offerReceived) return 'Waiting for remote host to accept and start sharing...'
+  return 'Negotiating peer-to-peer connection...'
+})
+
 const steps = computed(() => [
-  {label:'Signaling server',done:props.signalingConnected,active:!props.signalingConnected},
-  {label:'Peer discovered',done:['connecting','connected'].includes(props.state),active:props.signalingConnected&&props.state==='new'},
-  {label:'ICE negotiation',done:props.iceState==='connected'||props.iceState==='completed',active:props.iceState==='checking'},
-  {label:'Stream established',done:props.state==='connected',active:props.state==='connecting'},
+  { label: 'Signaling server', done: props.signalingConnected, active: !props.signalingConnected },
+  { label: 'Peer discovered', done: ['connecting', 'connected'].includes(props.state), active: props.signalingConnected && props.state === 'new' },
+  { label: 'Host stream approved', done: props.offerReceived || props.state === 'connected', active: props.state === 'connecting' && !props.offerReceived },
+  { label: 'Stream established', done: props.state === 'connected', active: props.offerReceived && props.state === 'connecting' },
 ])
 </script>
 

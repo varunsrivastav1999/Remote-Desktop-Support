@@ -266,6 +266,32 @@ async def legacy_get_session(
 
     session = await redis_client.hgetall(f"session:{clean_code}")
     if not session:
+        norm = normalize_device_id(clean_code)
+        session = await redis_client.hgetall(f"session:{norm}")
+        if session:
+            clean_code = norm
+
+    if not session:
+        from app.database import async_session_factory
+        from app.services.device_service import get_device
+        from app.services.presence_service import is_device_online
+        try:
+            async with async_session_factory() as db:
+                dev = await get_device(db, clean_code)
+                if dev:
+                    online = await is_device_online(redis_client, dev.id)
+                    return {
+                        "id": dev.id,
+                        "code": dev.id,
+                        "alias": dev.name,
+                        "host_identifier": dev.name,
+                        "status": "connected" if online else "offline",
+                        "host_online": online,
+                        "created_at": str(dev.created_at),
+                    }
+        except Exception as e:
+            logger.debug(f"Device fallback check failed for {clean_code}: {e}")
+
         raise HTTPException(status_code=404, detail="Session not found.")
 
     host_online = bool(await redis_client.exists(f"session:{clean_code}:peer:host"))

@@ -77,7 +77,7 @@
 
     <!-- ═══ Incoming Connection Request Modal (Host-Side) ═══ -->
     <transition name="fade">
-      <div v-if="device.incomingRequest.value" class="incoming-overlay">
+      <div v-if="device.incomingRequest.value || hostSession.pendingController.value" class="incoming-overlay">
         <div class="incoming-dialog">
           <div class="incoming-header">
             <span class="incoming-pulse-dot"></span>
@@ -85,8 +85,8 @@
           </div>
           <div class="incoming-content">
             <div class="caller-card">
-              <span class="caller-name">{{ device.incomingRequest.value.callerName }}</span>
-              <span class="caller-id font-mono">Device ID: {{ device.incomingRequest.value.callerDeviceId }}</span>
+              <span class="caller-name">{{ device.incomingRequest.value?.callerName || hostSession.incomingCallerName?.value || 'Remote Controller' }}</span>
+              <span class="caller-id font-mono">Device ID: {{ device.incomingRequest.value?.callerDeviceId || hostSession.incomingCallerId?.value || 'Remote Peer' }}</span>
             </div>
             <p class="incoming-sub">
               This computer requests access to view your screen and provide remote support.
@@ -447,9 +447,11 @@ function cancelOutgoingRequest() {
 
 async function handleAcceptIncoming() {
   const req = device.incomingRequest.value
-  if (!req) return
   try {
-    await device.acceptRequest(req.requestId)
+    if (req && req.requestId && !req.requestId.startsWith('direct-')) {
+      await device.acceptRequest(req.requestId).catch(() => {})
+    }
+    device.clearIncomingRequest?.()
     // Start host sharing session and initiate WebRTC offer immediately
     const ok = await hostSession.start()
     if (ok) {
@@ -463,9 +465,11 @@ async function handleAcceptIncoming() {
 
 async function handleRejectIncoming() {
   const req = device.incomingRequest.value
-  if (req) {
-    await device.rejectRequest(req.requestId)
+  if (req && req.requestId && !req.requestId.startsWith('direct-')) {
+    await device.rejectRequest(req.requestId).catch(() => {})
   }
+  device.clearIncomingRequest?.()
+  hostSession.denyController?.()
 }
 
 function copyAddress() {

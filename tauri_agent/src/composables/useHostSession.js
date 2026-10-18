@@ -1,27 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { readonly, ref } from 'vue'
-import { apiUrl, loadNetworkSettings, isNativeApp } from './serverConfig.js'
+import { apiUrl, loadNetworkSettings, isNativeApp, getDefaultIceServers } from './serverConfig.js'
 import { useScreenShare } from './useScreenShare.js'
 import { useSignaling } from './useSignaling.js'
 import { useDevice } from './useDevice.js'
 
-const DEFAULT_ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-]
-
 function rtcConfiguration(settings) {
-  const iceServers = [...DEFAULT_ICE_SERVERS]
-  for (const value of (settings.stunServers || '').split('\n')) {
-    if (value.trim()) iceServers.push({ urls: value.trim() })
-  }
-  for (const value of (settings.turnServers || '').split('\n')) {
-    if (!value.trim()) continue
-    const turn = { urls: value.trim() }
-    if (settings.turnUsername) turn.username = settings.turnUsername
-    if (settings.turnPassword) turn.credential = settings.turnPassword
-    iceServers.push(turn)
-  }
+  const iceServers = getDefaultIceServers(settings)
   const configuration = { iceServers }
   if (settings.alwaysRelay) configuration.iceTransportPolicy = 'relay'
   return configuration
@@ -159,6 +144,18 @@ function createHostSession() {
         pendingController.value = true
         state.value = 'approval'
         statusText.value = 'A remote controller is requesting access.'
+
+        // If screen is ALREADY shared, automatically send offer immediately
+        if (screenShare.localStream.value) {
+          console.log('[HostSession] Screen stream active, automatically starting WebRTC offer...')
+          await allowController(true)
+        } else {
+          device.triggerIncomingRequest?.({
+            requestId: 'direct-peer',
+            callerDeviceId: 'Remote Client',
+            callerName: 'Remote Controller',
+          })
+        }
       } else if (message.type === 'answer' && peerConnection) {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp))
         while (queuedIce.length) {

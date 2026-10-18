@@ -54,4 +54,51 @@ export function apiUrl(path, settings = loadNetworkSettings()) {
   }
 }
 
+export function getDefaultIceServers(settings = {}) {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+  ]
+
+  // Add self-hosted coturn STUN/TURN from current host
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    const host = window.location.hostname
+    if (host) {
+      iceServers.push({ urls: `stun:${host}:3478` })
+      iceServers.push({
+        urls: `turn:${host}:3478?transport=udp`,
+        username: 'remote',
+        credential: 'support_2026',
+      })
+      iceServers.push({
+        urls: `turn:${host}:3478?transport=tcp`,
+        username: 'remote',
+        credential: 'support_2026',
+      })
+    }
+  }
+
+  // Add custom STUN servers from settings
+  if (settings.stunServers) {
+    settings.stunServers.split('\n').forEach(s => {
+      if (s.trim()) iceServers.push({ urls: s.trim() })
+    })
+  }
+
+  // Add custom TURN servers from settings
+  if (settings.turnServers) {
+    settings.turnServers.split('\n').forEach(s => {
+      if (s.trim()) {
+        const turnServer = { urls: s.trim() }
+        if (settings.turnUsername) turnServer.username = settings.turnUsername
+        if (settings.turnPassword) turnServer.credential = settings.turnPassword
+        iceServers.push(turnServer)
+      }
+    })
+  }
+
+  return iceServers
+}
+
 
