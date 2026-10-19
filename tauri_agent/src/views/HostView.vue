@@ -32,7 +32,7 @@
     </div>
 
     <!-- Incoming Control Request Banner inside Host View -->
-    <div v-if="session.pendingController.value" class="host-approval-banner">
+    <div v-if="session.pendingController.value && !device.incomingRequest.value" class="host-approval-banner">
       <div class="host-approval-info">
         <span class="incoming-pulse-dot"></span>
         <div>
@@ -55,11 +55,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { setHostedAddress } from '../composables/useMyAddress.js'
 import { useHostSession } from '../composables/useHostSession.js'
+import { useDevice } from '../composables/useDevice.js'
 import { isNativeApp } from '../composables/serverConfig.js'
 
 const router = useRouter()
 const videoEl = ref(null)
 const session = useHostSession()
+const device = useDevice()
 const nativeHost = isNativeApp()
 
 const formattedCode = computed(() => session.sessionCode.value?.replace(/-/g, ' ') || 'Connecting...')

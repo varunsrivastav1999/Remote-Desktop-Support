@@ -113,7 +113,6 @@ function createHostSession() {
   }
 
   async function start() {
-    if (!await ensureOnline()) return false
     if (screenShare.localStream.value) return true
 
     error.value = ''
