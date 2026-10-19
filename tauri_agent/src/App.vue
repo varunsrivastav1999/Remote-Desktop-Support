@@ -266,6 +266,9 @@ const hasIncomingRequest = computed(() => {
   // If user is currently in a remote session as caller, never show incoming host request modal
   if (router.currentRoute.value?.name === 'Session') return false
 
+  // If host is already connected and controlling/sharing screen, never show incoming request modal
+  if (hostSession.controlEnabled.value || hostSession.state.value === 'connected') return false
+
   const req = device.incomingRequest.value
   const hasPending = hostSession.pendingController.value
   return Boolean(req || hasPending)
@@ -470,6 +473,10 @@ async function handleAcceptIncoming() {
   const req = device.incomingRequest.value
   const requestId = req?.requestId
 
+  if (requestId) {
+    device.markRequestHandled?.(requestId)
+  }
+
   // CRITICAL FIX FOR CHROME / BROWSER:
   // getDisplayMedia() MUST be called directly in this user click gesture.
   // Any awaits (network requests, router navigation) prior to calling getDisplayMedia()
@@ -496,6 +503,9 @@ async function handleAcceptIncoming() {
     if (requestId && !requestId.startsWith('direct-')) {
       device.acceptRequest(requestId).catch(() => {})
     }
+    // Purge pending requests in Redis on backend
+    device.clearBackendPendingRequest?.().catch(() => {})
+
     // Navigate to host screen if not already there
     if (router.currentRoute.value?.name !== 'Host') {
       await router.push('/host')
@@ -510,11 +520,15 @@ async function handleAcceptIncoming() {
 
 async function handleRejectIncoming() {
   const req = device.incomingRequest.value
+  if (req?.requestId) {
+    device.markRequestHandled?.(req.requestId)
+  }
   device.clearIncomingRequest?.()
   hostSession.pendingController.value = false
   if (req && req.requestId && !req.requestId.startsWith('direct-')) {
     await device.rejectRequest(req.requestId).catch(() => {})
   }
+  device.clearBackendPendingRequest?.().catch(() => {})
   hostSession.denyController?.()
 }
 

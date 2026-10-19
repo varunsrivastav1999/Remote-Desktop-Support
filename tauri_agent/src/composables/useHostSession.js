@@ -150,14 +150,21 @@ function createHostSession() {
           return
         }
 
+        // If host is already connected and controlling, ignore duplicate peer_joined
+        if (controlEnabled.value || state.value === 'connected') {
+          console.log('[HostSession] Already connected with peer, ignoring duplicate peer_joined')
+          return
+        }
+
         pendingController.value = true
         incomingCallerName.value = message.caller_name || 'Remote Controller'
         incomingCallerId.value = callerId
         state.value = 'approval'
         statusText.value = `A remote controller (${incomingCallerName.value}) is requesting access.`
 
+        const reqId = message.request_id || `direct-${sessionCode.value || 'peer'}`
         device.triggerIncomingRequest?.({
-          requestId: `direct-${sessionCode.value || 'peer'}`,
+          requestId: reqId,
           callerDeviceId: incomingCallerId.value,
           callerName: incomingCallerName.value,
         })

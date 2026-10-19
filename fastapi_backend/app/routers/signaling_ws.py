@@ -328,6 +328,9 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 target_role = "client" if role == "host" else "host"
             elif message_type in SIGNAL_TYPES and SIGNAL_TYPES[message_type][0] == role:
                 target_role = SIGNAL_TYPES[message_type][1]
+                if role == "host" and message_type == "offer":
+                    await redis_client.delete(f"device:{code}:pending_request")
+                    await redis_client.delete(f"session:{code}:pending_request")
             elif message_type == "ice_restart_request":
                 target_role = "host"
             else:

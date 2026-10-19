@@ -119,6 +119,9 @@ async def device_heartbeat(
     if pending_raw:
         try:
             pending_payload = json.loads(pending_raw)
+            # Delete pending request immediately so it is only delivered once and not re-delivered every heartbeat
+            await redis_client.delete(f"device:{norm_id}:pending_request")
+            await redis_client.delete(f"session:{norm_id}:pending_request")
         except Exception:
             pass
 
@@ -129,6 +132,21 @@ async def device_heartbeat(
         server_time=datetime.now(timezone.utc).isoformat(),
         pending_request=pending_payload,
     )
+
+
+@router.post("/{device_id}/clear-pending")
+async def clear_device_pending(
+    device_id: str,
+    request: Request,
+):
+    """
+    Clear pending connection requests for a device from Redis.
+    """
+    norm_id = normalize_device_id(device_id)
+    redis_client = get_redis(request)
+    await redis_client.delete(f"device:{norm_id}:pending_request")
+    await redis_client.delete(f"session:{norm_id}:pending_request")
+    return {"status": "ok", "device_id": norm_id}
 
 
 @router.get("/{device_id}", response_model=DeviceResponse)

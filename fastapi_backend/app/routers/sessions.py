@@ -109,6 +109,15 @@ async def approve_connection_request(
             host_auth_token=payload.auth_token,
         )
 
+        if not conn_req:
+            return {
+                "status": "ok",
+                "request_id": payload.request_id,
+                "accepted": payload.accept,
+                "session_token": None,
+                "session_code": None,
+            }
+
         await log_audit_event(
             db,
             event_type="connection_accepted" if payload.accept else "connection_rejected",

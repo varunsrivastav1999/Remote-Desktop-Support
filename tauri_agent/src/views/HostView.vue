@@ -109,6 +109,9 @@ async function handleApproveHost() {
 }
 
 onMounted(async () => {
+  if (videoEl.value && session.localStream.value) {
+    videoEl.value.srcObject = session.localStream.value
+  }
   await session.ensureOnline()
   if (session.sessionCode.value) setHostedAddress(session.sessionCode.value, session.state.value)
 })

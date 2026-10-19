@@ -128,14 +128,12 @@ export function useWebRTC(signaling) {
 
     // ─── Remote stream (video from host agent) ──────────
     pc.ontrack = (event) => {
-      console.log('[WebRTC] Received remote track:', event.track.kind)
+      console.log('[WebRTC] Received remote track:', event.track.kind, event.track.id)
+      event.track.enabled = true
       if (event.streams && event.streams.length > 0) {
         remoteStream.value = event.streams[0]
       } else {
-        if (!remoteStream.value) remoteStream.value = new MediaStream()
-        remoteStream.value.addTrack(event.track)
-        // Force reactivity for Vue watcher
-        remoteStream.value = new MediaStream(remoteStream.value.getTracks())
+        remoteStream.value = new MediaStream([event.track])
       }
       connectionState.value = 'connected'
     }

@@ -317,6 +317,9 @@ function scheduleWsReconnect() {
   }, delay)
 }
 
+// Track handled request IDs so approved/rejected requests are never shown again
+const handledRequestIds = new Set()
+
 // Global callback for when request is approved or connection initiates
 let onIncomingRequestCallback = null
 let onSessionStartCallback = null
@@ -329,14 +332,28 @@ function setOnSessionStart(cb) {
   onSessionStartCallback = cb
 }
 
+function markRequestHandled(reqId) {
+  if (reqId) {
+    handledRequestIds.add(reqId)
+    if (!reqId.startsWith('direct-') && deviceId.value) {
+      handledRequestIds.add(`direct-${deviceId.value}`)
+    }
+  }
+}
+
 function triggerIncomingRequest(req = {}) {
   const callerId = req.callerDeviceId || 'Remote Client'
   if (callerId && callerId === deviceId.value) {
     console.warn('[Remote Desktop] Ignored incoming request from self:', callerId)
     return
   }
+  const reqId = req.requestId || 'direct-signaling'
+  if (handledRequestIds.has(reqId)) {
+    console.log('[Remote Desktop] Ignored already handled request in triggerIncomingRequest:', reqId)
+    return
+  }
   incomingRequest.value = {
-    requestId: req.requestId || 'direct-signaling',
+    requestId: reqId,
     callerDeviceId: callerId,
     callerName: req.callerName || 'Remote Controller',
   }
@@ -346,6 +363,9 @@ function triggerIncomingRequest(req = {}) {
 }
 
 function clearIncomingRequest() {
+  if (incomingRequest.value?.requestId) {
+    markRequestHandled(incomingRequest.value.requestId)
+  }
   incomingRequest.value = null
 }
 
@@ -356,8 +376,13 @@ function handlePushMessage(msg) {
       console.warn('[Remote Desktop] Ignored incoming request from self:', callerId)
       return
     }
+    const reqId = msg.request_id || `direct-${msg.session_code || deviceId.value || 'peer'}`
+    if (handledRequestIds.has(reqId)) {
+      console.log('[Remote Desktop] Ignored already handled push request:', reqId)
+      return
+    }
     incomingRequest.value = {
-      requestId: msg.request_id || `direct-${msg.session_code || deviceId.value || 'peer'}`,
+      requestId: reqId,
       callerDeviceId: callerId,
       callerName: msg.caller_name || 'Remote Controller',
     }
@@ -373,9 +398,24 @@ function handlePushMessage(msg) {
 }
 
 /**
+ * Clear pending connection request on backend Redis
+ */
+async function clearBackendPendingRequest() {
+  if (!deviceId.value) return
+  const settings = loadNetworkSettings()
+  try {
+    await fetch(apiUrl(`/api/v1/devices/${deviceId.value}/clear-pending`, settings), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+  } catch (_) {}
+}
+
+/**
  * Accept incoming connection request
  */
 async function acceptRequest(requestId) {
+  if (requestId) markRequestHandled(requestId)
   const settings = loadNetworkSettings()
   try {
     const res = await fetch(apiUrl('/api/v1/sessions/approve', settings), {
@@ -389,10 +429,12 @@ async function acceptRequest(requestId) {
     })
     const data = await res.json()
     incomingRequest.value = null
+    clearBackendPendingRequest().catch(() => {})
     return data
   } catch (err) {
     console.error('[Remote Desktop] Accept failed:', err)
     incomingRequest.value = null
+    clearBackendPendingRequest().catch(() => {})
     throw err
   }
 }
@@ -401,6 +443,7 @@ async function acceptRequest(requestId) {
  * Reject incoming connection request
  */
 async function rejectRequest(requestId) {
+  if (requestId) markRequestHandled(requestId)
   const settings = loadNetworkSettings()
   try {
     await fetch(apiUrl('/api/v1/sessions/approve', settings), {
@@ -416,6 +459,7 @@ async function rejectRequest(requestId) {
     console.error('[Remote Desktop] Reject failed:', err)
   } finally {
     incomingRequest.value = null
+    clearBackendPendingRequest().catch(() => {})
   }
 }
 
@@ -430,6 +474,7 @@ async function resetDeviceId() {
   storage.removeItem(LEGACY_TOKEN_KEY)
   deviceId.value = ''
   deviceToken.value = ''
+  handledRequestIds.clear()
   stopHeartbeat()
   if (deviceWs) {
     try { deviceWs.close(1000) } catch (_) {}
@@ -469,6 +514,8 @@ export function useDevice() {
     incomingRequest: readonly(incomingRequest),
     triggerIncomingRequest,
     clearIncomingRequest,
+    markRequestHandled,
+    clearBackendPendingRequest,
     registerDevice,
     resetDeviceId,
     acceptRequest,

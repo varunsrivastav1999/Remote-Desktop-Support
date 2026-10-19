@@ -19,6 +19,8 @@
       autoplay
       playsinline
       muted
+      @loadedmetadata="onLoadedMetadata"
+      @canplay="onCanPlay"
     ></video>
 
     <!-- Cursor overlay indicator -->
@@ -29,7 +31,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 
 const props = defineProps({
   stream: {
@@ -48,19 +50,61 @@ const showCursorHint = ref(true)
 let lastMoveTime = 0
 const MOVE_THROTTLE_MS = 16
 
-// Attach the remote stream to the video element
+function attachStream(stream) {
+  if (!videoEl.value) return
+  try {
+    videoEl.value.muted = true
+    if (videoEl.value.srcObject !== stream) {
+      console.log('[RemoteScreen] Attaching remote stream:', stream)
+      videoEl.value.srcObject = stream || null
+    }
+    if (stream) {
+      stream.getVideoTracks().forEach(track => {
+        track.enabled = true
+        track.onunmute = () => {
+          console.log('[RemoteScreen] Remote video track unmuted')
+          if (videoEl.value) {
+            videoEl.value.play().catch(e => console.warn('[RemoteScreen] Play on unmute:', e))
+          }
+        }
+      })
+      const p = videoEl.value.play()
+      if (p !== undefined) {
+        p.catch(e => console.warn('[RemoteScreen] Video play failed:', e))
+      }
+    }
+  } catch (err) {
+    console.error('[RemoteScreen] Error attaching stream:', err)
+  }
+}
+
+function onLoadedMetadata() {
+  console.log('[RemoteScreen] Video metadata loaded:', videoEl.value?.videoWidth, 'x', videoEl.value?.videoHeight)
+  if (videoEl.value) {
+    videoEl.value.play().catch(e => console.warn('[RemoteScreen] Play on loadedmetadata:', e))
+  }
+}
+
+function onCanPlay() {
+  if (videoEl.value) {
+    videoEl.value.play().catch(e => console.warn('[RemoteScreen] Play on canplay:', e))
+  }
+}
+
+// Attach remote stream whenever it changes
 watch(
   () => props.stream,
   (newStream) => {
-    if (videoEl.value && newStream) {
-      videoEl.value.srcObject = newStream
-      videoEl.value.play().catch(e => console.warn('[RemoteScreen] Video play failed:', e))
-    }
-  },
-  { immediate: true }
+    attachStream(newStream)
+  }
 )
 
 onMounted(() => {
+  // Attach stream immediately when component is mounted
+  attachStream(props.stream)
+  nextTick(() => {
+    attachStream(props.stream)
+  })
   // Focus the container to capture keyboard events
   container.value?.focus()
 })

@@ -209,6 +209,11 @@ async def process_approval(
     req_res = await db.execute(select(ConnectionRequest).where(ConnectionRequest.id == request_id))
     conn_req = req_res.scalar_one_or_none()
     if not conn_req:
+        if request_id.startswith("direct-"):
+            target_id = request_id.replace("direct-", "")
+            await redis_client.delete(f"device:{target_id}:pending_request")
+            await redis_client.delete(f"session:{target_id}:pending_request")
+            return None, None
         raise ValueError("Connection request not found.")
 
     if conn_req.status != "pending":
