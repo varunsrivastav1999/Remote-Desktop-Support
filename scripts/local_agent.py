@@ -82,6 +82,9 @@ if HAS_PYNPUT:
         "F12": Key.f12,
     }
 
+import base64
+import shutil
+
 class CompanionHandler(BaseHTTPRequestHandler):
     def _send_cors(self, status=200, content_type="application/json"):
         self.send_response(status)
@@ -105,6 +108,8 @@ class CompanionHandler(BaseHTTPRequestHandler):
                 "platform": sys.platform,
             }
             self.wfile.write(json.dumps(payload).encode("utf-8"))
+        elif self.path == "/fs/home":
+            self.handle_fs_home({})
         else:
             self._send_cors(404)
             self.wfile.write(b'{"error": "not found"}')
@@ -123,6 +128,18 @@ class CompanionHandler(BaseHTTPRequestHandler):
             self.handle_key(data)
         elif self.path == "/terminal":
             self.handle_terminal(data)
+        elif self.path == "/fs/home":
+            self.handle_fs_home(data)
+        elif self.path == "/fs/list":
+            self.handle_fs_list(data)
+        elif self.path == "/fs/read_chunk":
+            self.handle_fs_read_chunk(data)
+        elif self.path == "/fs/write_chunk":
+            self.handle_fs_write_chunk(data)
+        elif self.path == "/fs/delete":
+            self.handle_fs_delete(data)
+        elif self.path == "/fs/mkdir":
+            self.handle_fs_mkdir(data)
         else:
             self._send_cors(404)
             self.wfile.write(b'{"error": "not found"}')
@@ -136,7 +153,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
         btn = Button.left
         if btn_idx == 1:
             btn = Button.middle
-        elif btn_idx == 2:
+        elif btn_idx == 2 or mtype == "contextmenu":
             btn = Button.right
 
         target_x = max(0, min(SCREEN_WIDTH - 1, int(x_norm * SCREEN_WIDTH)))
@@ -158,6 +175,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
                 elif mtype == "dblclick":
                     mouse.position = (target_x, target_y)
                     mouse.click(btn, 2)
+                elif mtype == "contextmenu":
+                    mouse.position = (target_x, target_y)
+                    mouse.click(Button.right, 1)
                 elif mtype == "scroll":
                     delta_x = int(data.get("deltaX", 0))
                     delta_y = int(data.get("deltaY", 0))
@@ -198,9 +218,14 @@ class CompanionHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            shell_bin = os.environ.get("SHELL", "/bin/sh")
+            if sys.platform == "win32":
+                shell_cmd = ["cmd.exe", "/c", cmd]
+            else:
+                shell_bin = os.environ.get("SHELL", "/bin/sh")
+                shell_cmd = [shell_bin, "-c", cmd]
+
             proc = subprocess.run(
-                [shell_bin, "-c", cmd],
+                shell_cmd,
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -215,6 +240,122 @@ class CompanionHandler(BaseHTTPRequestHandler):
             res = {"stdout": "", "stderr": "Command timed out after 15 seconds\n", "exit_code": 124}
         except Exception as e:
             res = {"stdout": "", "stderr": f"Execution error: {e}\n", "exit_code": 1}
+
+        self._send_cors(200)
+        self.wfile.write(json.dumps(res).encode("utf-8"))
+
+    # ═════════════════════════════════════════════════════════════
+    # Filesystem Operations
+    # ═════════════════════════════════════════════════════════════
+
+    def handle_fs_home(self, _data):
+        home = os.path.expanduser("~")
+        payload = {
+            "path": home,
+            "separator": os.sep,
+            "platform": sys.platform,
+        }
+        self._send_cors(200)
+        self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+    def handle_fs_list(self, data):
+        dir_path = data.get("path") or os.path.expanduser("~")
+        entries = []
+        try:
+            if os.path.exists(dir_path) and os.path.isdir(dir_path):
+                with os.scandir(dir_path) as it:
+                    for entry in it:
+                        try:
+                            is_dir = entry.is_dir(follow_symlinks=False)
+                            size = 0 if is_dir else entry.stat().st_size
+                            entries.append({
+                                "name": entry.name,
+                                "path": entry.path,
+                                "is_dir": is_dir,
+                                "size": size,
+                            })
+                        except (PermissionError, OSError):
+                            continue
+            # Sort: directories first, then alphabetically
+            entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+            res = {"path": dir_path, "entries": entries, "error": None}
+        except Exception as e:
+            res = {"path": dir_path, "entries": [], "error": str(e)}
+
+        self._send_cors(200)
+        self.wfile.write(json.dumps(res).encode("utf-8"))
+
+    def handle_fs_read_chunk(self, data):
+        path = data.get("path", "")
+        offset = int(data.get("offset", 0))
+        chunk_size = int(data.get("size", 49152))
+
+        try:
+            total_size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                f.seek(offset)
+                chunk_data = f.read(chunk_size)
+            
+            encoded = base64.b64encode(chunk_data).decode("ascii")
+            res = {
+                "name": os.path.basename(path),
+                "data": encoded,
+                "size": len(chunk_data),
+                "offset": offset,
+                "total_size": total_size,
+                "eof": (offset + len(chunk_data)) >= total_size,
+            }
+        except Exception as e:
+            res = {"error": str(e), "eof": True, "size": 0, "data": ""}
+
+        self._send_cors(200)
+        self.wfile.write(json.dumps(res).encode("utf-8"))
+
+    def handle_fs_write_chunk(self, data):
+        dest_dir = data.get("dest", "")
+        filename = data.get("name", "")
+        chunk_b64 = data.get("data", "")
+        offset = int(data.get("offset", 0))
+
+        target_path = os.path.join(dest_dir, filename) if filename else dest_dir
+        try:
+            raw_bytes = base64.b64decode(chunk_b64)
+            mode = "wb" if offset == 0 else "r+b"
+            if not os.path.exists(target_path) and offset > 0:
+                mode = "wb"
+
+            with open(target_path, mode) as f:
+                f.seek(offset)
+                f.write(raw_bytes)
+            
+            res = {"status": "ok", "path": target_path, "written": len(raw_bytes)}
+        except Exception as e:
+            res = {"error": str(e), "status": "error"}
+
+        self._send_cors(200)
+        self.wfile.write(json.dumps(res).encode("utf-8"))
+
+    def handle_fs_delete(self, data):
+        target = data.get("path", "")
+        try:
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            elif os.path.isfile(target):
+                os.remove(target)
+            res = {"status": "ok"}
+        except Exception as e:
+            res = {"status": "error", "error": str(e)}
+
+        self._send_cors(200)
+        self.wfile.write(json.dumps(res).encode("utf-8"))
+
+    def handle_fs_mkdir(self, data):
+        target = data.get("path", "")
+        try:
+            os.makedirs(target, exist_ok=True)
+            res = {"status": "ok"}
+        except Exception as e:
+            res = {"status": "error", "error": str(e)}
 
         self._send_cors(200)
         self.wfile.write(json.dumps(res).encode("utf-8"))

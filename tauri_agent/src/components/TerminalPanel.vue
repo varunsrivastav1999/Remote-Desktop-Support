@@ -38,6 +38,7 @@ watch(() => props.visible, async (isVisible) => {
     } else if (term) {
       fitAddon.fit()
     }
+    nextTick(() => term?.focus())
   }
 })
 

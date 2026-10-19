@@ -29,6 +29,8 @@ function createHostSession() {
   const incomingCallerName = ref('')
   const incomingCallerId = ref('')
   const controlEnabled = ref(false)
+  const chatMessages = ref([])
+  const unreadCount = ref(0)
 
   let settings = {}
   let hostToken = ''
@@ -39,6 +41,7 @@ function createHostSession() {
   let fileChannel = null
   let queuedIce = []
   let onlinePromise = null
+  let currentIncomingUpload = null
   const pressedButtons = new Set()
   const pressedKeys = new Set()
 
@@ -367,16 +370,162 @@ function createHostSession() {
         const msg = JSON.parse(event.data)
         if (msg.type === 'get_home') {
           let home = '/'
+          let sep = '/'
+          let platform = hostLabel()
           if (isNativeApp()) {
             home = await invoke('fs_get_home').catch(() => '/')
+          } else {
+            try {
+              const res = await fetch('http://127.0.0.1:8765/fs/home', { signal: AbortSignal.timeout(3000) })
+              if (res.ok) {
+                const data = await res.json()
+                home = data.path || home
+                sep = data.separator || sep
+                platform = data.platform || platform
+              }
+            } catch (_) {}
           }
-          fileChannel.send(JSON.stringify({ type: 'home', path: home, separator: '/', platform: hostLabel() }))
+          fileChannel.send(JSON.stringify({ type: 'home', path: home, separator: sep, platform }))
         } else if (msg.type === 'list') {
           let entries = []
           if (isNativeApp()) {
             entries = await invoke('fs_list_dir', { dirPath: msg.path }).catch(() => [])
+          } else {
+            try {
+              const res = await fetch('http://127.0.0.1:8765/fs/list', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: msg.path }),
+                signal: AbortSignal.timeout(10000),
+              })
+              if (res.ok) {
+                const data = await res.json()
+                entries = data.entries || []
+              }
+            } catch (_) {}
           }
           fileChannel.send(JSON.stringify({ type: 'listing', path: msg.path, entries }))
+        } else if (msg.type === 'download') {
+          try {
+            let offset = 0
+            const chunkSize = 48 * 1024
+            let totalSize = 0
+            let fileName = msg.path.split('/').pop().split('\\').pop()
+            let eof = false
+
+            const res = await fetch('http://127.0.0.1:8765/fs/read_chunk', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: msg.path, offset: 0, size: chunkSize }),
+              signal: AbortSignal.timeout(15000),
+            })
+            if (res.ok) {
+              const initial = await res.json()
+              fileName = initial.name || fileName
+              totalSize = initial.total_size || 0
+              fileChannel.send(JSON.stringify({
+                type: 'download_start',
+                name: fileName,
+                size: totalSize,
+              }))
+
+              if (initial.data) {
+                fileChannel.send(JSON.stringify({
+                  type: 'download_chunk',
+                  data: initial.data,
+                  size: initial.size,
+                }))
+              }
+              offset += initial.size || 0
+              eof = initial.eof || (offset >= totalSize)
+
+              while (!eof && offset < totalSize) {
+                const nextRes = await fetch('http://127.0.0.1:8765/fs/read_chunk', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ path: msg.path, offset, size: chunkSize }),
+                  signal: AbortSignal.timeout(15000),
+                })
+                if (!nextRes.ok) break
+                const chunkData = await nextRes.json()
+                if (!chunkData.data) break
+                fileChannel.send(JSON.stringify({
+                  type: 'download_chunk',
+                  data: chunkData.data,
+                  size: chunkData.size,
+                }))
+                offset += chunkData.size
+                eof = chunkData.eof || (offset >= totalSize)
+                await new Promise(r => setTimeout(r, 10))
+              }
+
+              fileChannel.send(JSON.stringify({ type: 'download_end' }))
+            } else {
+              fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to read file from host' }))
+            }
+          } catch (err) {
+            fileChannel.send(JSON.stringify({ type: 'error', message: err.message }))
+          }
+        } else if (msg.type === 'upload_start') {
+          currentIncomingUpload = {
+            name: msg.name,
+            size: msg.size,
+            dest: msg.dest,
+            received: 0,
+          }
+          fileChannel.send(JSON.stringify({ type: 'upload_ready' }))
+        } else if (msg.type === 'upload_chunk') {
+          if (currentIncomingUpload) {
+            try {
+              await fetch('http://127.0.0.1:8765/fs/write_chunk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  dest: currentIncomingUpload.dest,
+                  name: currentIncomingUpload.name,
+                  data: msg.data,
+                  offset: msg.offset,
+                }),
+                signal: AbortSignal.timeout(15000),
+              })
+              currentIncomingUpload.received = msg.offset + (msg.data ? Math.round(msg.data.length * 0.75) : 0)
+              const pct = currentIncomingUpload.size > 0
+                ? Math.min(100, Math.round((currentIncomingUpload.received / currentIncomingUpload.size) * 100))
+                : 100
+              fileChannel.send(JSON.stringify({
+                type: 'upload_progress',
+                received: currentIncomingUpload.received,
+                progress: pct,
+              }))
+            } catch (_) {}
+          }
+        } else if (msg.type === 'upload_end') {
+          currentIncomingUpload = null
+          fileChannel.send(JSON.stringify({ type: 'upload_complete' }))
+        } else if (msg.type === 'delete') {
+          try {
+            await fetch('http://127.0.0.1:8765/fs/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: msg.path }),
+              signal: AbortSignal.timeout(10000),
+            })
+            fileChannel.send(JSON.stringify({ type: 'delete_ok' }))
+          } catch (err) {
+            fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to delete file' }))
+          }
+        } else if (msg.type === 'mkdir') {
+          try {
+            await fetch('http://127.0.0.1:8765/fs/mkdir', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: msg.path }),
+              signal: AbortSignal.timeout(10000),
+            })
+            fileChannel.send(JSON.stringify({ type: 'mkdir_ok' }))
+          } catch (err) {
+            fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to create directory' }))
+          }
         }
       } catch (e) {
         console.error('File channel error:', e)
@@ -440,30 +589,31 @@ function createHostSession() {
             body: JSON.stringify(message),
           }).catch(() => {})
         }
-      } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick') {
+      } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick' || message.type === 'contextmenu') {
+        const btn = message.type === 'contextmenu' ? 2 : (message.button ?? 0)
         if (isNativeApp()) {
           await invoke('move_mouse', { x: message.x, y: message.y })
           if (message.type === 'mousedown') {
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
-            pressedButtons.add(message.button ?? 0)
+            await invoke('mouse_event', { button: btn, isDown: true })
+            pressedButtons.add(btn)
           } else if (message.type === 'mouseup') {
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
-            pressedButtons.delete(message.button ?? 0)
-          } else if (message.type === 'click') {
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
+            await invoke('mouse_event', { button: btn, isDown: false })
+            pressedButtons.delete(btn)
+          } else if (message.type === 'click' || message.type === 'contextmenu') {
+            await invoke('mouse_event', { button: btn, isDown: true })
+            await invoke('mouse_event', { button: btn, isDown: false })
           } else if (message.type === 'dblclick') {
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
+            await invoke('mouse_event', { button: btn, isDown: true })
+            await invoke('mouse_event', { button: btn, isDown: false })
             await new Promise(r => setTimeout(r, 40))
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
-            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
+            await invoke('mouse_event', { button: btn, isDown: true })
+            await invoke('mouse_event', { button: btn, isDown: false })
           }
         } else {
           fetch('http://127.0.0.1:8765/mouse', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(message),
+            body: JSON.stringify({ ...message, button: btn }),
           }).catch(() => {})
         }
       } else if (message.type === 'scroll') {
@@ -498,11 +648,33 @@ function createHostSession() {
       } else if (message.type === 'get_monitors') {
         sendControl({ type: 'monitors', list: [{ index: 1, name: 'Shared screen' }], current: 1 })
       } else if (message.type === 'chat') {
-        sendControl({ ...message, sender: 'client' })
+        chatMessages.value.push({
+          text: message.text,
+          sender: message.sender || 'client',
+          timestamp: message.timestamp || new Date().toISOString(),
+          delivered: true,
+        })
+        unreadCount.value++
       }
     } catch (_invokeError) {
       error.value = 'Remote input needs native app permissions.'
     }
+  }
+
+  function sendChat(text) {
+    if (!text || !text.trim()) return
+    const msg = {
+      type: 'chat',
+      text: text.trim(),
+      sender: 'host',
+      timestamp: new Date().toISOString(),
+    }
+    sendControl(msg)
+    chatMessages.value.push({ ...msg, delivered: true })
+  }
+
+  function markChatRead() {
+    unreadCount.value = 0
   }
 
   function sendControl(message) {
@@ -585,6 +757,10 @@ function createHostSession() {
     incomingCallerId: readonly(incomingCallerId),
     controlEnabled: readonly(controlEnabled),
     signalingConnected: signaling.isConnected,
+    chatMessages,
+    unreadCount,
+    sendChat,
+    markChatRead,
     ensureOnline,
     start,
     stopSharing,

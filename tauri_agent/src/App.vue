@@ -545,6 +545,10 @@ function copyAddress() {
 }
 
 onMounted(async () => {
+  window.addEventListener('open-settings', (e) => {
+    showSettings.value = true
+    if (e.detail?.tab) settingsTab.value = e.detail.tab
+  })
   await device.registerDevice()
   await hostSession.ensureOnline()
 })

@@ -16,6 +16,7 @@
       @toggle-files="showFiles = !showFiles"
       @toggle-chat="toggleChat"
       @switch-monitor="webrtc.switchMonitor($event)"
+      @open-settings="handleOpenSettings"
     />
 
     <!-- Remote Screen -->
@@ -166,6 +167,9 @@ function toggleFullscreen() {
   }
 }
 
+function handleOpenSettings() {
+  window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'network' } }))
+}
 </script>
 
 <style scoped>
