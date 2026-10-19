@@ -3,6 +3,7 @@ from app.routers.sessions import router as sessions_router
 from app.routers.signaling_ws import router as signaling_router
 from app.routers.health import router as health_router
 from app.routers.terminal import router as terminal_router
+from app.routers.agent import router as agent_router
 
 __all__ = [
     "devices_router",
@@ -10,4 +11,5 @@ __all__ = [
     "signaling_router",
     "health_router",
     "terminal_router",
+    "agent_router",
 ]

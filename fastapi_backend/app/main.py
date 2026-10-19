@@ -12,6 +12,7 @@ from app.routers import (
     sessions_router,
     signaling_router,
     terminal_router,
+    agent_router,
 )
 
 logging.basicConfig(
@@ -65,3 +66,4 @@ app.include_router(devices_router)
 app.include_router(sessions_router)
 app.include_router(signaling_router)
 app.include_router(terminal_router)
+app.include_router(agent_router)

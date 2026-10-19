@@ -45,6 +45,37 @@ function createHostSession() {
   const pressedButtons = new Set()
   const pressedKeys = new Set()
 
+  async function callAgent(endpoint, method = 'POST', data = null) {
+    const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
+    const cleanPath = endpoint.replace(/^\//, '')
+    const body = data ? JSON.stringify(data) : undefined
+    const headers = data ? { 'Content-Type': 'application/json' } : {}
+
+    if (isHttps) {
+      try {
+        const url = apiUrl(`/api/v1/agent/${cleanPath}`, settings)
+        const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(12000) })
+        if (res.ok) return res
+      } catch (e) {
+        console.warn('[HostSession] HTTPS agent proxy error:', e)
+      }
+    }
+
+    try {
+      const directUrl = `http://127.0.0.1:8765/${cleanPath}`
+      const res = await fetch(directUrl, { method, headers, body, signal: AbortSignal.timeout(3000) })
+      if (res.ok) return res
+    } catch (_) {}
+
+    try {
+      const url = apiUrl(`/api/v1/agent/${cleanPath}`, settings)
+      const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(12000) })
+      return res
+    } catch (e) {
+      return null
+    }
+  }
+
   async function ensureOnline() {
     if (sessionCode.value && device.deviceStatus.value === 'online' && signaling.isConnected.value) return true
     if (onlinePromise) return onlinePromise
@@ -304,13 +335,8 @@ function createHostSession() {
         let executed = false
         // 1. Try local companion agent first (executes on host OS)
         try {
-          const localRes = await fetch('http://127.0.0.1:8765/terminal', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: cmd }),
-            signal: AbortSignal.timeout(15000),
-          })
-          if (localRes.ok) {
+          const localRes = await callAgent('terminal', 'POST', { command: cmd })
+          if (localRes && localRes.ok) {
             const d = await localRes.json()
             const out = (d.stdout || '') + (d.stderr || '')
             const formatted = out.replace(/\r?\n/g, '\r\n')
@@ -376,8 +402,8 @@ function createHostSession() {
             home = await invoke('fs_get_home').catch(() => '/')
           } else {
             try {
-              const res = await fetch('http://127.0.0.1:8765/fs/home', { signal: AbortSignal.timeout(3000) })
-              if (res.ok) {
+              const res = await callAgent('fs/home', 'GET')
+              if (res && res.ok) {
                 const data = await res.json()
                 home = data.path || home
                 sep = data.separator || sep
@@ -392,13 +418,8 @@ function createHostSession() {
             entries = await invoke('fs_list_dir', { dirPath: msg.path }).catch(() => [])
           } else {
             try {
-              const res = await fetch('http://127.0.0.1:8765/fs/list', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: msg.path }),
-                signal: AbortSignal.timeout(10000),
-              })
-              if (res.ok) {
+              const res = await callAgent('fs/list', 'POST', { path: msg.path })
+              if (res && res.ok) {
                 const data = await res.json()
                 entries = data.entries || []
               }
@@ -413,13 +434,8 @@ function createHostSession() {
             let fileName = msg.path.split('/').pop().split('\\').pop()
             let eof = false
 
-            const res = await fetch('http://127.0.0.1:8765/fs/read_chunk', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: msg.path, offset: 0, size: chunkSize }),
-              signal: AbortSignal.timeout(15000),
-            })
-            if (res.ok) {
+            const res = await callAgent('fs/read_chunk', 'POST', { path: msg.path, offset: 0, size: chunkSize })
+            if (res && res.ok) {
               const initial = await res.json()
               fileName = initial.name || fileName
               totalSize = initial.total_size || 0
@@ -440,13 +456,8 @@ function createHostSession() {
               eof = initial.eof || (offset >= totalSize)
 
               while (!eof && offset < totalSize) {
-                const nextRes = await fetch('http://127.0.0.1:8765/fs/read_chunk', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ path: msg.path, offset, size: chunkSize }),
-                  signal: AbortSignal.timeout(15000),
-                })
-                if (!nextRes.ok) break
+                const nextRes = await callAgent('fs/read_chunk', 'POST', { path: msg.path, offset, size: chunkSize })
+                if (!nextRes || !nextRes.ok) break
                 const chunkData = await nextRes.json()
                 if (!chunkData.data) break
                 fileChannel.send(JSON.stringify({
@@ -477,16 +488,11 @@ function createHostSession() {
         } else if (msg.type === 'upload_chunk') {
           if (currentIncomingUpload) {
             try {
-              await fetch('http://127.0.0.1:8765/fs/write_chunk', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  dest: currentIncomingUpload.dest,
-                  name: currentIncomingUpload.name,
-                  data: msg.data,
-                  offset: msg.offset,
-                }),
-                signal: AbortSignal.timeout(15000),
+              await callAgent('fs/write_chunk', 'POST', {
+                dest: currentIncomingUpload.dest,
+                name: currentIncomingUpload.name,
+                data: msg.data,
+                offset: msg.offset,
               })
               currentIncomingUpload.received = msg.offset + (msg.data ? Math.round(msg.data.length * 0.75) : 0)
               const pct = currentIncomingUpload.size > 0
@@ -504,24 +510,14 @@ function createHostSession() {
           fileChannel.send(JSON.stringify({ type: 'upload_complete' }))
         } else if (msg.type === 'delete') {
           try {
-            await fetch('http://127.0.0.1:8765/fs/delete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: msg.path }),
-              signal: AbortSignal.timeout(10000),
-            })
+            await callAgent('fs/delete', 'POST', { path: msg.path })
             fileChannel.send(JSON.stringify({ type: 'delete_ok' }))
           } catch (err) {
             fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to delete file' }))
           }
         } else if (msg.type === 'mkdir') {
           try {
-            await fetch('http://127.0.0.1:8765/fs/mkdir', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: msg.path }),
-              signal: AbortSignal.timeout(10000),
-            })
+            await callAgent('fs/mkdir', 'POST', { path: msg.path })
             fileChannel.send(JSON.stringify({ type: 'mkdir_ok' }))
           } catch (err) {
             fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to create directory' }))
@@ -583,11 +579,7 @@ function createHostSession() {
         if (isNativeApp()) {
           await invoke('move_mouse', { x: message.x, y: message.y })
         } else {
-          fetch('http://127.0.0.1:8765/mouse', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(message),
-          }).catch(() => {})
+          callAgent('mouse', 'POST', message)
         }
       } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick' || message.type === 'contextmenu') {
         const btn = message.type === 'contextmenu' ? 2 : (message.button ?? 0)
@@ -610,11 +602,7 @@ function createHostSession() {
             await invoke('mouse_event', { button: btn, isDown: false })
           }
         } else {
-          fetch('http://127.0.0.1:8765/mouse', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...message, button: btn }),
-          }).catch(() => {})
+          callAgent('mouse', 'POST', { ...message, button: btn })
         }
       } else if (message.type === 'scroll') {
         if (isNativeApp()) {
@@ -623,11 +611,7 @@ function createHostSession() {
             deltaY: scrollSteps(message.deltaY),
           })
         } else {
-          fetch('http://127.0.0.1:8765/mouse', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(message),
-          }).catch(() => {})
+          callAgent('mouse', 'POST', message)
         }
       } else if (message.type === 'keydown' || message.type === 'keyup') {
         if (isNativeApp()) {
@@ -635,11 +619,7 @@ function createHostSession() {
           if (message.type === 'keydown') pressedKeys.add(message.key)
           else pressedKeys.delete(message.key)
         } else {
-          fetch('http://127.0.0.1:8765/key', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(message),
-          }).catch(() => {})
+          callAgent('key', 'POST', message)
         }
       } else if (message.type === 'clipboard') {
         if (message.text && navigator.clipboard && window.isSecureContext) {
