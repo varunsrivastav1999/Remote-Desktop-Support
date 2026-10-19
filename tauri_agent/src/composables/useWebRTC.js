@@ -29,6 +29,9 @@ export function useWebRTC(signaling) {
   const offerReceived = ref(false)
   const waitingForHost = ref(true)
 
+  // ─── Control State (View Only by default) ─────────────────
+  const isControlling = ref(false)
+
   // ─── Authentication ──────────────────────────────────────
   const authRequired = ref(false)
   const authFailed = ref(false)
@@ -349,6 +352,21 @@ export function useWebRTC(signaling) {
           stats.hostResolution = data.resolution
           break
 
+        case 'control_granted':
+          isControlling.value = true
+          console.log('[WebRTC] Host confirmed control granted -> CONTROL ACTIVE')
+          break
+
+        case 'control_released':
+          isControlling.value = false
+          console.log('[WebRTC] Host confirmed control released -> VIEW ONLY')
+          break
+
+        case 'control_revoked':
+          isControlling.value = false
+          console.log('[WebRTC] Host revoked control -> VIEW ONLY')
+          break
+
         default:
           // Unknown control message, ignore
           break
@@ -370,8 +388,33 @@ export function useWebRTC(signaling) {
 
   function sendAuth(password) { return sendControl({ type: 'auth', password }) }
 
-  function sendMouseEvent(type, x, y, extra = {}) { return sendControl({ type, x, y, ...extra }) }
-  function sendKeyEvent(type, key, modifiers = {}) { return sendControl({ type, key, ...modifiers }) }
+  function takeControl() {
+    isControlling.value = true
+    sendControl({ type: 'take_control' })
+    console.log('[WebRTC] Take Control sent -> isControlling = true')
+    return true
+  }
+
+  function releaseControl() {
+    isControlling.value = false
+    sendControl({ type: 'release_control' })
+    console.log('[WebRTC] Release Control sent -> isControlling = false')
+    return true
+  }
+
+  function toggleControl() {
+    return isControlling.value ? releaseControl() : takeControl()
+  }
+
+  function sendMouseEvent(type, x, y, extra = {}) {
+    if (!isControlling.value) return false
+    return sendControl({ type, x, y, ...extra })
+  }
+
+  function sendKeyEvent(type, key, modifiers = {}) {
+    if (!isControlling.value) return false
+    return sendControl({ type, key, ...modifiers })
+  }
 
   // ─── Quality ─────────────────────────────────────────────
 
@@ -527,6 +570,7 @@ export function useWebRTC(signaling) {
     remoteStream.value = null
     connectionState.value = 'disconnected'
     dataChannelState.value = 'closed'
+    isControlling.value = false
     console.log('[WebRTC] Connection closed')
   }
 
@@ -548,6 +592,10 @@ export function useWebRTC(signaling) {
     fileChannel: readonly(fileChannel),
     offerReceived: readonly(offerReceived),
     waitingForHost: readonly(waitingForHost),
+    isControlling: readonly(isControlling),
+    takeControl,
+    releaseControl,
+    toggleControl,
     initAsClient,
     sendControl,
     sendAuth,

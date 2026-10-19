@@ -9,6 +9,10 @@
       :monitors="webrtc.monitors.value"
       :current-monitor="webrtc.currentMonitor.value"
       :unread-count="webrtc.unreadCount.value"
+      :is-controlling="webrtc.isControlling.value"
+      @take-control="webrtc.takeControl()"
+      @release-control="webrtc.releaseControl()"
+      @clipboard-sync="handleClipboardSync"
       @disconnect="handleDisconnect"
       @fullscreen="toggleFullscreen"
       @toggle-stats="showStats = !showStats"
@@ -24,6 +28,8 @@
       <RemoteScreen
         v-if="webrtc.connectionState.value === 'connected'"
         :stream="webrtc.remoteStream.value"
+        :is-controlling="webrtc.isControlling.value"
+        @take-control="webrtc.takeControl()"
         @mouse-event="handleMouseEvent"
         @key-event="handleKeyEvent"
         @clipboard-paste="webrtc.sendClipboard($event)"
@@ -71,6 +77,12 @@
         @send="webrtc.sendChat($event)"
       />
 
+      <!-- Feedback Toast Notification -->
+      <transition name="toast-fade">
+        <div v-if="toastMessage" class="session-toast">
+          {{ toastMessage }}
+        </div>
+      </transition>
     </div>
   </div>
 </template>
@@ -171,6 +183,34 @@ function toggleFullscreen() {
 function handleOpenSettings() {
   window.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'network' } }))
 }
+
+// ─── Toast Notifications & Clipboard ──────────────────────
+const toastMessage = ref('')
+let toastTimeout = null
+
+function showToast(msg) {
+  toastMessage.value = msg
+  if (toastTimeout) clearTimeout(toastTimeout)
+  toastTimeout = setTimeout(() => { toastMessage.value = '' }, 3200)
+}
+
+async function handleClipboardSync() {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text) {
+        webrtc.sendClipboard(text)
+        showToast('Local clipboard synced to remote host')
+      } else {
+        showToast('Local clipboard is empty')
+      }
+    } catch (e) {
+      showToast('Browser blocked clipboard access. Check browser permissions.')
+    }
+  } else {
+    showToast('Clipboard access requires HTTPS or secure context')
+  }
+}
 </script>
 
 <style scoped>
@@ -246,5 +286,36 @@ function handleOpenSettings() {
   color: var(--color-accent-red) !important;
   margin: 12px 0 0 !important;
   font-size: 0.8rem !important;
+}
+
+.session-toast {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  background: rgba(17, 24, 39, 0.94);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #fff;
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  z-index: 100;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5), 0 0 10px rgba(96, 165, 250, 0.2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: all 0.25s ease;
+}
+
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
 }
 </style>

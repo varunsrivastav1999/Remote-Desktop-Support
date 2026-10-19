@@ -301,9 +301,9 @@ function createHostSession() {
     if (!screenShare.localStream.value && !await start()) return
     pendingController.value = false
     device.clearIncomingRequest?.()
-    controlEnabled.value = true
+    controlEnabled.value = false
     state.value = 'connecting'
-    statusText.value = 'Connecting approved controller...'
+    statusText.value = 'Connecting approved controller (View Only mode)...'
     closePeer()
 
     // Ensure signaling is online & connected
@@ -633,7 +633,6 @@ function createHostSession() {
   }
 
   async function handleControlMessage(rawMessage) {
-    if (!controlEnabled.value) return
     let message
     try {
       message = JSON.parse(rawMessage)
@@ -642,6 +641,50 @@ function createHostSession() {
     }
 
     try {
+      // 1. Session control commands (always processed)
+      if (message.type === 'take_control') {
+        controlEnabled.value = true
+        sendControl({ type: 'control_granted' })
+        statusText.value = 'Remote user has taken control.'
+        return
+      }
+
+      if (message.type === 'release_control') {
+        controlEnabled.value = false
+        releasePressedInput()
+        sendControl({ type: 'control_released' })
+        signaling.send({ type: 'agent_control', data: { type: 'release_control' } })
+        callAgent('control', 'POST', { type: 'release_control' })
+        statusText.value = 'Remote user released control. View only mode.'
+        return
+      }
+
+      if (message.type === 'get_monitors') {
+        sendControl({ type: 'monitors', list: [{ index: 1, name: 'Shared screen' }], current: 1 })
+        return
+      }
+
+      if (message.type === 'chat') {
+        chatMessages.value.push({
+          text: message.text,
+          sender: message.sender || 'client',
+          timestamp: message.timestamp || new Date().toISOString(),
+          delivered: true,
+        })
+        unreadCount.value++
+        return
+      }
+
+      if (message.type === 'clipboard') {
+        if (message.text && navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(message.text).catch(() => {})
+        }
+        return
+      }
+
+      // 2. Interactive Input Events (gated by controlEnabled)
+      if (!controlEnabled.value) return
+
       if (message.type === 'mousemove') {
         if (isNativeApp()) {
           await invoke('move_mouse', { x: message.x, y: message.y })
@@ -693,20 +736,6 @@ function createHostSession() {
           signaling.send({ type: 'agent_control', data: message })
           callAgent('key', 'POST', message)
         }
-      } else if (message.type === 'clipboard') {
-        if (message.text && navigator.clipboard && window.isSecureContext) {
-          navigator.clipboard.writeText(message.text).catch(() => {})
-        }
-      } else if (message.type === 'get_monitors') {
-        sendControl({ type: 'monitors', list: [{ index: 1, name: 'Shared screen' }], current: 1 })
-      } else if (message.type === 'chat') {
-        chatMessages.value.push({
-          text: message.text,
-          sender: message.sender || 'client',
-          timestamp: message.timestamp || new Date().toISOString(),
-          delivered: true,
-        })
-        unreadCount.value++
       }
     } catch (_invokeError) {
       error.value = 'Remote input needs native app permissions.'

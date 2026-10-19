@@ -264,6 +264,38 @@ def execute_key(data):
     return {"status": "error", "message": "No key driver available"}
 
 
+def release_all_inputs():
+    """Safety cleanup: release any held mouse buttons or modifier keys on remote host."""
+    if HAS_PYNPUT:
+        if mouse:
+            try:
+                mouse.release(Button.left)
+                mouse.release(Button.right)
+                mouse.release(Button.middle)
+            except Exception:
+                pass
+        if keyboard:
+            for k in (
+                Key.ctrl, Key.ctrl_l, Key.ctrl_r,
+                Key.alt, Key.alt_l, Key.alt_r,
+                Key.shift, Key.shift_l, Key.shift_r,
+                Key.cmd, Key.cmd_l, Key.cmd_r
+            ):
+                try:
+                    keyboard.release(k)
+                except Exception:
+                    pass
+    elif HAS_XDOTOOL:
+        try:
+            run_xdotool("mouseup", "1")
+            run_xdotool("mouseup", "2")
+            run_xdotool("mouseup", "3")
+            run_xdotool("keyup", "Control_L", "Control_R", "Alt_L", "Alt_R", "Shift_L", "Shift_R", "Super_L", "Super_R")
+        except Exception:
+            pass
+    return {"status": "ok"}
+
+
 current_terminal_cwd = os.path.expanduser("~")
 
 def execute_terminal(data):
@@ -459,6 +491,8 @@ class CompanionHandler(BaseHTTPRequestHandler):
             res = execute_mouse(data)
         elif path == "/key":
             res = execute_key(data)
+        elif path in ("/control", "/release_control", "/release_all"):
+            res = release_all_inputs()
         elif path == "/terminal":
             res = execute_terminal(data)
         elif path == "/fs/home":
@@ -569,6 +603,8 @@ async def run_websocket_client(server_url, device_id):
                             execute_mouse(data)
                         elif mtype in ("keydown", "keyup"):
                             execute_key(data)
+                        elif mtype in ("release_control", "release_all"):
+                            release_all_inputs()
                         elif mtype == "terminal":
                             result = execute_terminal(data)
                             await ws.send(json.dumps({"type": "reply", "reply_to": "terminal", "req_id": req_id, **result}))
