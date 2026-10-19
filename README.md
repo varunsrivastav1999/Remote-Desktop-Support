@@ -1,6 +1,29 @@
 # Remote Desktop Support — Production-Grade Self-Hosted Remote Desktop
 
-**Remote Desktop Support** is a modern, high-performance, self-hosted remote desktop application inspired by AnyDesk and RustDesk. It allows two computers to connect seamlessly using a permanent, hardware-independent **Device ID** (`AG-XXX-XXX-XXX`), establishing direct peer-to-peer **WebRTC** sessions for low-latency screen control, interactive terminal access, bidirectional clipboard sync, and file transfer.
+**Remote Desktop Support** is a modern, high-performance, self-hosted remote desktop application inspired by AnyDesk and RustDesk. It allows two computers to connect seamlessly using a permanent, hardware-independent **Device ID** (`AG-XXX-XXX-XXX`), establishing direct peer-to-peer **WebRTC** sessions for low-latency screen control, interactive terminal access, bidirectional clipboard sync, two-way chat, and file transfer.
+
+The system is **100% self-contained, open-source, and free to use** with zero reliance on paid third-party services.
+
+---
+
+> [!IMPORTANT]
+> **Fixed Live Production Access URL:**
+> 👉 **[https://webmaster-meal-classroom-colony.trycloudflare.com/](https://webmaster-meal-classroom-colony.trycloudflare.com/)**
+>
+> Open this URL on **any computer or browser** (macOS, Windows, Linux) to start a session, share your screen, or control a remote machine. No port forwarding or paid subscriptions required.
+
+## 🌐 Live Public Access & Deployment URLs
+
+| Service | Address |
+| :--- | :--- |
+| **Fixed Public Web App & Controller** | [https://webmaster-meal-classroom-colony.trycloudflare.com/](https://webmaster-meal-classroom-colony.trycloudflare.com/) |
+| **Public Server Healthcheck** | [https://webmaster-meal-classroom-colony.trycloudflare.com/health](https://webmaster-meal-classroom-colony.trycloudflare.com/health) |
+| **Public Agent Proxy Health** | [https://webmaster-meal-classroom-colony.trycloudflare.com/api/v1/agent/health](https://webmaster-meal-classroom-colony.trycloudflare.com/api/v1/agent/health) |
+| **Local Web Interface** | `http://localhost:5173` |
+| **Local FastAPI Backend** | `http://localhost:8000` |
+| **Local PostgreSQL Database** | `localhost:5433` |
+| **Local Redis Cache** | `localhost:6379` |
+| **Local Coturn TURN/STUN** | `localhost:3478` (UDP/TCP) |
 
 ---
 
@@ -9,14 +32,16 @@
 ```text
 Remote Desktop Support Server Stack
 ┌────────────────────────────────────────────────────────────────────────┐
-│  FastAPI Backend (Async SQLAlchemy + Redis PubSub)                     │
+│  FastAPI Backend (Async SQLAlchemy + Redis PubSub + Agent HTTPS Proxy) │
 │  - Device Registry & Permanent AG-XXX-XXX-XXX ID Allocation            │
 │  - Presence & Heartbeat Engine (Redis TTL + DB Tracking)               │
 │  - Session Authorization & Unattended PIN Verification                 │
 │  - Push Notifications & WebRTC Signaling Dispatch                      │
+│  - HTTPS Agent Proxy (/api/v1/agent/*) for Browser Host OS Control     │
 │                                                                        │
 │  PostgreSQL (Persistent Storage)  │  Redis (Real-time Presence)        │
-│  Coturn (TURN/STUN Relay)         │  Nginx (Web Controller UI)         │
+│  Coturn (TURN/STUN Relay)         │  Nginx / Vite (Web App UI)         │
+│  Cloudflare Tunnel (Public HTTPS) │  Watchtower & Auto Updater         │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
                        WebSocket / HTTPS Signaling
@@ -28,11 +53,13 @@ Device ID: AG-482-193-721                           Device ID: AG-735-281-904
           │                                                   │
           └══════════════ Direct WebRTC P2P ══════════════════┘
              (LAN / Internet STUN / Fallback to Coturn TURN)
-             • Encrypted VP8/VP9/H.264 Video Stream
-             • Mouse & Keyboard Input Injection (Rust Native)
-             • Bidirectional Clipboard Synchronization
+             • Encrypted Video Stream (VP8/VP9/H.264)
+             • Letterbox-Aware Mouse & Keyboard Input Injection
+             • High-Visibility Remote Cursor & Tactile Click Indicator
+             • Two-Way In-Session Chat (Host ↔ Client with Unread Badges)
              • Interactive Remote Shell / Terminal Channel
-             • P2P Secure File Transfer Channel
+             • P2P Secure File Transfer (Upload/Download Chunks)
+             • In-Session Network & Security Settings Drawer
 ```
 
 ---
@@ -40,15 +67,19 @@ Device ID: AG-482-193-721                           Device ID: AG-735-281-904
 ## 2. Key Features
 
 - **Permanent Device ID (`AG-XXX-XXX-XXX`):** Securely generated, persistent across reboots, DHCP changes, router switches, and Wi-Fi $\leftrightarrow$ Ethernet transitions.
-- **Direct P2P WebRTC Transmission:** Media and control data flow directly between peers without passing through the server when direct connection is achievable.
+- **Direct P2P WebRTC Transmission:** Video and control data flow directly between peers without passing through the server when direct connection is achievable.
 - **Coturn TURN Fallback:** Transparent relay fallback for symmetric NATs and restricted enterprise firewalls.
 - **Live Consent & Unattended Access:**
-  - **Attended Mode:** Host receives an incoming connection request popup with `[ ACCEPT ]` and `[ REJECT ]` buttons.
+  - **Attended Mode:** Host receives an incoming connection request banner with `[ Allow Control ]` and `[ Deny ]` buttons.
   - **Unattended Mode:** Optional Argon2/PBKDF2-hashed security PIN allows trusted remote access without local user interaction.
-- **Native Input Injection:** Rust-powered mouse movement, multi-button clicks, scrolling, keyboard input, and OS shortcuts.
-- **Interactive Shell / Terminal:** Direct terminal streaming over an authenticated WebRTC data channel without exposing SSH port 22 publicly.
-- **Secure File Transfer:** Chunked binary transfer with path-traversal prevention, progress tracking, and size limits.
-- **Resilient Reconnection:** Automatic exponential backoff, WebSocket session recovery, and WebRTC ICE restarts on network interruptions.
+- **Visible & Controllable Mouse Pointer:**
+  - **Letterbox-Aware Coordinate Calculation:** Automatically scales input across any screen aspect ratio or window size with 100% pixel precision.
+  - **High-Visibility Cursor:** Sharp SVG pointer with drop shadow and interactive click/drag indicator dot.
+  - **Full Mouse Actions:** Single click, double click, right-click (`contextmenu`), drag-and-drop, and scroll wheel.
+- **Two-Way In-Session Chat:** Host and Controller can chat seamlessly with unread message badges on both ends.
+- **Interactive Shell / SSH Terminal:** Real interactive shell via `xterm.js` and WebRTC data channel with zero port 22 exposure.
+- **P2P File Transfer:** Direct file browsing, downloading files in 48 KB chunks, uploading with live progress tracking, folder creation, and deletion.
+- **In-Session Settings & Diagnostics:** Access network, signaling, relay, and security settings directly from the in-session toolbar; view real-time latency (RTT), FPS, bitrate, jitter, and packet loss.
 - **Zero Proprietary Dependencies:** 100% self-hosted; no reliance on AnyDesk, TeamViewer, Chrome Remote Desktop, or Firebase.
 
 ---
@@ -68,7 +99,7 @@ cd Remote-Desktop-Support
 # Copy environment configuration
 cp .env.example .env
 
-# Start all backend and controller services
+# Start all backend, database, relay, and web services
 docker compose up -d --build
 ```
 
@@ -84,110 +115,92 @@ Expected output:
 
 ---
 
-## 4. Native Host Agent Setup
+## 4. Host OS Remote Control Setup
 
-The native host agent runs on machines being controlled or connecting. It owns OS capture, display streaming, and accessibility injection permissions.
+Remote Desktop Support supports two host modes:
 
-### Prerequisites
-- Node.js $\ge$ 18 & npm
-- Rust $\ge$ 1.75 (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-- Platform dependencies:
-  - **macOS:** Grant *Screen Recording* and *Accessibility* permissions in System Settings.
-  - **Linux:** `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
-  - **Windows:** Standard build tools (C++ desktop development workload).
+### Mode A: Browser Host + Native Companion Agent (Recommended for Web Users)
+When sharing a screen through a web browser (Google Chrome, Microsoft Edge, Mozilla Firefox), run the lightweight companion daemon on the host machine to grant OS mouse, keyboard, and filesystem control:
 
-### One-Command Launch (Docker + PM2 Tauri Agent)
-To bring up the entire Docker stack and automatically launch the Tauri Host Agent in the background using PM2:
 ```bash
-./start.sh
-```
-This runs:
-1. `docker compose up -d` (PostgreSQL, Redis, Coturn, FastAPI Backend, Web App)
-2. Waits for the backend healthcheck (`http://localhost:8000/health`)
-3. Launches the Tauri host agent with PM2 via `ecosystem.config.js`
-
-To manage the background agent:
-```bash
-# View live logs
-npx pm2 logs remote-support-agent
-
-# View process status
-npx pm2 status
-
-# Stop everything (PM2 agent + Docker containers)
-./stop.sh
+# Start the companion agent in the background
+nohup python3 scripts/local_agent.py > scripts/local_agent.log 2>&1 &
 ```
 
-### Running Host Agent Manually in Development
+- **macOS Permissions:** Grant *Screen Recording* and *Accessibility* permissions to your Terminal / Python process in **System Settings → Privacy & Security → Accessibility**.
+- **Windows / Linux:** Works out of the box using `pynput` with zero configuration required.
+- **HTTPS Mixed-Content Protection:** When accessed via Cloudflare Tunnel (`https://...`), requests to the companion agent are automatically routed through the backend proxy (`/api/v1/agent/*`), ensuring complete browser security compliance.
+
+### Mode B: Native Tauri Desktop Application
+For an all-in-one native binary (no Python required):
+
 ```bash
 cd tauri_agent
 npm install
 npm run tauri dev
 ```
 
-### Building Production Installers
+Build production installers (`.dmg`, `.deb`, `.msi`):
 ```bash
-cd tauri_agent
 npm run tauri build
 ```
-Built binaries and native bundles are created in `tauri_agent/src-tauri/target/release/bundle/`:
-- **macOS:** `.dmg` / `.app`
-- **Linux:** `.deb` / `.AppImage`
-- **Windows:** `.msi` / `.exe`
 
 ---
 
-## 5. Connection Workflow
+## 5. How to Connect
 
-### Attended Support Flow
-1. **Host (Computer B):** Starts Remote Desktop Support. The app generates or restores its permanent Device ID (e.g. `AG-735-281-904`) and registers with the backend.
-2. **Controller (Computer A):** Enters `AG-735-281-904` and clicks **CONNECT**.
-3. **Backend:** Locates Computer B, checks online presence, and pushes a connection request via WebSocket `/ws/device/AG-735-281-904`.
-4. **Host (Computer B):** Displays incoming connection popup:
+### 1. Attended Support Flow
+1. **Host Computer:** Open [https://webmaster-meal-classroom-colony.trycloudflare.com/](https://webmaster-meal-classroom-colony.trycloudflare.com/) (or `http://localhost:5173`). Click **Share This Desk** and select the screen/window to share.
+2. **Controller Computer:** Open the same URL, enter the Host's Device ID (`AG-XXX-XXX-XXX`), and click **Connect**.
+3. **Approval:** The Host receives an on-screen prompt:
    ```text
-   Incoming Connection Request
-   Origin: Computer A (AG-482-193-721)
-   [ ACCEPT ]   [ REJECT ]
+   Incoming Control Request
+   Remote Controller is requesting to view and control this screen.
+   [ Deny ]   [ Allow Control ]
    ```
-5. **Session Established:** Upon acceptance, an authenticated session token is created, WebRTC SDP offer/answer exchange occurs, and the direct peer-to-peer connection is opened.
+4. **Active Session:** Once approved, the remote desktop stream is active with full mouse control, keyboard input, terminal access, file transfer, and chat.
 
-### Unattended Access Flow
-1. **Host:** Configures an Unattended Access PIN in **Settings > Security**. The PIN is hashed using PBKDF2-HMAC-SHA256 (100,000 iterations) with a cryptographic salt before backend synchronization.
-2. **Controller:** Enters the remote Device ID and PIN. The backend validates the hash and auto-approves the session without requiring local interaction.
-
----
-
-## 6. Network Change & Reconnection Resilience
-
-Remote Desktop Support is engineered for real-world network fluctuations:
-- **DHCP / IP Address Changes:** The Device ID (`AG-XXX-XXX-XXX`) remains invariant. When an IP changes, the agent detects the network event, updates its presence on the backend, and gathers fresh ICE candidates.
-- **Wi-Fi $\leftrightarrow$ Ethernet Switching:** The WebRTC layer detects connection state drops and initiates an **ICE Restart** without dropping the application session.
-- **Backend or Network Downtime:** Both host and client employ exponential backoff reconnect algorithms (`1s` $\to$ `2s` $\to$ `4s` $\to$ max `30s`) to resume signaling immediately when connectivity returns.
+### 2. Unattended Access Flow
+1. **Host:** In **Settings → Security & PIN**, enable **Unattended Access** and set a secure PIN.
+2. **Controller:** Connects using the Device ID and enters the PIN to establish the session without requiring manual on-screen approval.
 
 ---
 
-## 7. Interactive Terminal & File Transfer
+## 6. Interactive Features Reference
 
-### Terminal / Shell
-- **Zero Port 22 Exposure:** The interactive shell operates strictly inside the established WebRTC encrypted peer channel.
-- **Native Process Integration:** Spawns a shell (`/bin/sh`, `$SHELL`, or `cmd.exe`) on the host machine, piping stdin/stdout/stderr to an xterm.js terminal panel.
-- **Security:** Requires explicit session authorization; commands cannot be injected outside of active, authenticated sessions.
+### Remote Control & Mouse Actions
+- **Single Click / Left Click:** Dispatches single OS click without double-triggering.
+- **Right Click:** Context menu triggers right click across all operating systems.
+- **Double Click:** Opens folders and files natively.
+- **Drag-and-Drop:** Press and drag items across the desktop.
+- **Scroll Wheel:** Proportional vertical and horizontal scrolling.
 
-### File Transfer
-- **Direct P2P Data Channel:** Transfers bypass the server entirely.
-- **Path Traversal Protection:** All directory listings and file operations enforce strict path sandboxing.
-- **Visual Progress:** Features live speed metrics, progress bars, and upload/download cancellation.
+### In-Session Terminal / Shell
+- Click the **Terminal** icon in the toolbar.
+- Type commands (`ls`, `pwd`, `whoami`, etc.) and receive real shell output.
+- Auto-focused with `xterm.js` and responsive resizing.
+
+### P2P File Transfer
+- Click the **File Transfer** icon in the toolbar.
+- Browse remote folders, download files, drag-and-drop to upload with real-time transfer speed and progress indicators, create folders, or delete files.
+
+### Two-Way Session Chat
+- Click the **Chat** icon in the toolbar (client) or header (host).
+- Instant two-way messaging with unread notification badges.
+
+### In-Session Settings
+- Click the **Settings** gear icon in the toolbar to adjust network servers, STUN/TURN configuration, or security PINs on the fly.
 
 ---
 
-## 8. Configuration Reference (`.env`)
+## 7. Configuration Reference (`.env`)
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `POSTGRES_USER` | `rsadmin` | Database username |
 | `POSTGRES_PASSWORD` | `support_2026` | Database password |
 | `POSTGRES_DB` | `remote_support` | Database name |
-| `POSTGRES_HOST_PORT` | `5433` | Host-mapped PostgreSQL port (avoids conflict with local port 5432) |
+| `POSTGRES_HOST_PORT` | `5433` | Host-mapped PostgreSQL port (avoids conflict with local 5432) |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis connection URL |
 | `DATABASE_URL` | `postgresql+asyncpg://...` | Async SQLAlchemy database URL |
 | `SESSION_TTL_SECONDS` | `2592000` | Device registration TTL (30 days) |
@@ -200,21 +213,12 @@ Remote Desktop Support is engineered for real-world network fluctuations:
 
 ---
 
-## 9. Verification & Automated Testing
+## 8. Verification & Testing
 
 ### Backend & Database Tests
-Run the comprehensive 7-stage backend integration test suite inside Docker:
 ```bash
 docker compose run --rm backend python tests/test_api.py
 ```
-Test suite covers:
-1. PostgreSQL schema creation & table migrations
-2. Device ID format generation & string normalization
-3. Host agent registration & token verification
-4. Redis heartbeat, presence TTL, and last-seen updates
-5. Connection request lifecycle (`pending` $\to$ `accepted` $\to$ `active`)
-6. Unattended access PIN hash validation
-7. FastAPI REST endpoints (`/health`, `/api/v1/devices/*`, `/api/v1/sessions/*`)
 
 ### Frontend Build & Typecheck
 ```bash
@@ -222,24 +226,22 @@ cd tauri_agent
 npm run build
 ```
 
-### Native Rust Engine Check
+### Agent Healthcheck
 ```bash
-cd tauri_agent/src-tauri
-cargo check
+curl -s https://webmaster-meal-classroom-colony.trycloudflare.com/api/v1/agent/health
 ```
 
 ---
 
-## 10. Security Model
+## 9. Security Model
 
-- **Permanent Identity Separation:** Device IDs are routing identifiers, not authentication tokens. Possession of a Device ID alone grants zero access.
-- **Mandatory Approval:** Every connection requires either interactive approval from the host user or validation against a salted, hashed PIN.
-- **End-to-End Encryption:** All WebRTC video, input events, clipboard data, terminal I/O, and files are encrypted using DTLS-SRTP and SCTP.
-- **Audit Logging:** Every connection request, approval, rejection, and session termination is permanently logged in the PostgreSQL `audit_logs` table.
-- **Safe Clipboard Sync:** Clipboard text synchronization enforces strict payload limits (max 64 KB) and filters arbitrary binary payloads.
+- **Identity Separation:** Device IDs are routing identifiers; access is only granted upon explicit approval or authenticated PIN match.
+- **End-to-End Encryption:** WebRTC media, control events, clipboard data, terminal I/O, and files are encrypted using DTLS-SRTP and SCTP.
+- **Audit Logging:** Every connection request, approval, rejection, and session termination is permanently logged in PostgreSQL.
+- **Clipboard Sync Safety:** Clipboard text synchronization enforces strict payload limits (max 64 KB).
 
 ---
 
-## 11. License
+## 10. License
 
 MIT License. See [LICENSE](LICENSE) for details.
