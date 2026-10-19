@@ -108,6 +108,10 @@ export function useWebRTC(signaling) {
       iceState.value = pc.iceConnectionState
       console.log('[WebRTC] ICE state:', pc.iceConnectionState)
 
+      if (['connected', 'completed'].includes(pc.iceConnectionState)) {
+        connectionState.value = 'connected'
+      }
+
       if (pc.iceConnectionState === 'failed') {
         handleIceFailure()
       }
@@ -133,6 +137,7 @@ export function useWebRTC(signaling) {
         // Force reactivity for Vue watcher
         remoteStream.value = new MediaStream(remoteStream.value.getTracks())
       }
+      connectionState.value = 'connected'
     }
 
     // ─── Data channel (for mouse/keyboard control) ──────

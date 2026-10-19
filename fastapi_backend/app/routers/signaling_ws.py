@@ -166,13 +166,17 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
     async def listen_for_peer() -> None:
         try:
             async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                payload = json.loads(message["data"])
-                if payload.get("connection_id") == connection_id:
-                    continue
-                if role and payload.get("target_role") in (None, role):
-                    await websocket.send_json(payload["data"])
+                try:
+                    if message["type"] != "message":
+                        continue
+                    payload = json.loads(message["data"])
+                    if payload.get("connection_id") == connection_id:
+                        continue
+                    if role and payload.get("target_role") in (None, role):
+                        msg_to_send = payload.get("data") if (isinstance(payload, dict) and "data" in payload) else payload
+                        await websocket.send_json(msg_to_send)
+                except Exception as inner_e:
+                    logger.warning(f"Error handling pubsub message in session {code}: {inner_e}")
         except asyncio.CancelledError:
             pass
         except Exception:

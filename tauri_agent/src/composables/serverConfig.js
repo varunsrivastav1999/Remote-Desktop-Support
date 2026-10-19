@@ -59,12 +59,14 @@ export function getDefaultIceServers(settings = {}) {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.services.mozilla.com' },
   ]
 
-  // Add self-hosted coturn STUN/TURN from current host
+  // Add self-hosted coturn STUN/TURN from current host ONLY if not on Cloudflare tunnel
   if (typeof window !== 'undefined' && window.location?.hostname) {
     const host = window.location.hostname
-    if (host) {
+    if (host && !host.includes('trycloudflare.com') && !host.includes('cloudflare')) {
       iceServers.push({ urls: `stun:${host}:3478` })
       iceServers.push({
         urls: `turn:${host}:3478?transport=udp`,
@@ -78,6 +80,18 @@ export function getDefaultIceServers(settings = {}) {
       })
     }
   }
+
+  // Reliable public TURN relay for cross-NAT traversal
+  iceServers.push({
+    urls: [
+      'turn:openrelay.metered.ca:80',
+      'turn:openrelay.metered.ca:443',
+      'turn:openrelay.metered.ca:443?transport=tcp',
+      'turns:openrelay.metered.ca:443?transport=tcp',
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  })
 
   // Add custom STUN servers from settings
   if (settings.stunServers) {
