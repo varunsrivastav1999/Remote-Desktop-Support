@@ -80,14 +80,15 @@
         v-if="!isControlling"
         id="btn-take-control"
         class="btn-control-action btn-control-action--take"
-        :disabled="connectionState !== 'connected'"
+        :disabled="connectionState !== 'connected' || controlPending"
         @click="$emit('take-control')"
-        title="Take Control: Enable interactive mouse & keyboard control on remote computer"
+        :title="controlPending ? 'Establishing remote control connection...' : 'Take Control: Enable interactive mouse & keyboard control on remote computer'"
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+        <span v-if="controlPending" class="toolbar-spinner"></span>
+        <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
           <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
         </svg>
-        <span>Take Control</span>
+        <span>{{ controlPending ? 'Connecting...' : 'Take Control' }}</span>
       </button>
 
       <button
@@ -236,6 +237,7 @@ const props = defineProps({
   currentMonitor: { type: Number, default: 1 },
   unreadCount: { type: Number, default: 0 },
   isControlling: { type: Boolean, default: false },
+  controlPending: { type: Boolean, default: false },
 })
 
 defineEmits([
@@ -462,6 +464,19 @@ const statusLabel = computed(() => {
   0% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.4); }
   50% { box-shadow: 0 0 18px rgba(220, 38, 38, 0.7); }
   100% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.4); }
+}
+
+.toolbar-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: tb-spin 0.7s linear infinite;
+}
+
+@keyframes tb-spin {
+  to { transform: rotate(360deg); }
 }
 
 .chat-toggle {

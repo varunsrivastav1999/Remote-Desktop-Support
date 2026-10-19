@@ -1,56 +1,120 @@
+import asyncio
+import json
 import logging
-from typing import Any, Dict
+import uuid
+from typing import Any, Dict, Optional
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
-import httpx
+import redis.asyncio as redis
+from app.services.device_service import normalize_device_id
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"])
 logger = logging.getLogger("remote_support.agent_proxy")
 
-AGENT_HOSTS = ["http://host.docker.internal:8765", "http://127.0.0.1:8765", "http://localhost:8765"]
 
-async def forward_to_agent(method: str, path: str, json_data: Any = None) -> Response:
-    """
-    Forwards request from HTTPS frontend to local host agent running on host OS,
-    preventing browser Mixed Content errors.
-    """
-    for base_url in AGENT_HOSTS:
-        target_url = f"{base_url}/{path.lstrip('/')}"
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                if method == "GET":
-                    resp = await client.get(target_url)
-                else:
-                    resp = await client.post(target_url, json=json_data)
-                return Response(
-                    content=resp.content,
-                    status_code=resp.status_code,
-                    media_type=resp.headers.get("content-type", "application/json"),
-                )
-        except Exception:
-            continue
+def get_redis(request: Request) -> redis.Redis:
+    return request.app.state.redis
 
-    return JSONResponse(
-        status_code=503,
-        content={"error": "Native host companion agent not reachable", "status": "offline"},
-    )
 
 @router.get("/health")
-async def agent_health():
-    return await forward_to_agent("GET", "health")
+async def agent_gateway_health():
+    """
+    Health check for the agent gateway.
+    Never connects to localhost/127.0.0.1 to avoid executing actions on the local server machine.
+    """
+    return {
+        "status": "ok",
+        "gateway": "remote_dispatch",
+        "mode": "device_targeted",
+    }
 
-@router.get("/fs/home")
-async def agent_fs_home():
-    return await forward_to_agent("GET", "fs/home")
 
-@router.post("/{path:path}")
-async def agent_proxy_post(path: str, request: Request):
+@router.get("/{device_id}/health")
+async def device_agent_health(device_id: str, request: Request):
+    """
+    Checks the real online status of the native companion agent on the specified remote device.
+    """
+    norm_id = normalize_device_id(device_id)
+    r = get_redis(request)
+    online = await r.exists(f"device:{norm_id}:agent_online")
+    raw_info = await r.hgetall(f"device:{norm_id}:agent_info")
+    info = {}
+    for k, v in (raw_info or {}).items():
+        try:
+            info[k] = json.loads(v)
+        except Exception:
+            info[k] = v
+
+    return {
+        "device_id": norm_id,
+        "agent_online": bool(online),
+        "info": info,
+    }
+
+
+@router.post("/{device_id}/{action:path}")
+async def dispatch_to_remote_agent(device_id: str, action: str, request: Request):
+    """
+    Dispatches an action to the remote connected laptop via the device's persistent agent channel.
+    Guarantees no local-machine execution.
+    """
+    norm_id = normalize_device_id(device_id)
+    r = get_redis(request)
+
+    clean_action = action.strip("/").replace("/", "_")
     try:
-        data = await request.json()
+        body = await request.json()
     except Exception:
-        data = {}
-    return await forward_to_agent("POST", path, data)
+        body = {}
 
-@router.get("/{path:path}")
-async def agent_proxy_get(path: str):
-    return await forward_to_agent("GET", path)
+    req_id = f"req_{uuid.uuid4().hex[:10]}"
+    payload = {
+        "type": clean_action,
+        "req_id": req_id,
+        **body,
+    }
+
+    # Subscribe to session channel to wait for agent's reply
+    pubsub = r.pubsub()
+    session_channel = f"channel:session:{norm_id}"
+    await pubsub.subscribe(session_channel)
+
+    try:
+        # Publish request to the remote agent
+        await r.publish(f"channel:agent:{norm_id}", json.dumps(payload))
+
+        # Wait for reply matching req_id
+        async def wait_for_reply():
+            async for msg in pubsub.listen():
+                if msg["type"] != "message":
+                    continue
+                try:
+                    data = json.loads(msg["data"])
+                    inner = data.get("data") if (isinstance(data, dict) and "data" in data) else data
+                    if isinstance(inner, dict) and inner.get("req_id") == req_id:
+                        return inner
+                except Exception:
+                    pass
+            return None
+
+        reply = await asyncio.wait_for(wait_for_reply(), timeout=6.0)
+        if reply:
+            return JSONResponse(status_code=200, content=reply)
+        return JSONResponse(
+            status_code=504,
+            content={"error": f"Remote host agent for {norm_id} did not respond.", "status": "timeout"},
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={"error": f"Remote host agent for {norm_id} timed out.", "status": "timeout"},
+        )
+    except Exception as e:
+        logger.exception(f"Error dispatching to agent {norm_id}: {e}")
+        return JSONResponse(
+            status_code=502,
+            content={"error": str(e), "status": "error"},
+        )
+    finally:
+        await pubsub.unsubscribe(session_channel)
+        await pubsub.aclose()

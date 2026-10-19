@@ -19,6 +19,9 @@ export function useFileTransfer(fileChannel) {
   const remotePlatform = ref('')
   const separator = ref('/')
   const isLoading = ref(false)
+  const errorMessage = ref('')
+  let homeTimeout = null
+  let listTimeout = null
 
   // Transfer queue
   const transfers = ref([])
@@ -37,7 +40,6 @@ export function useFileTransfer(fileChannel) {
   let downloadSize = 0
   let downloadStartTime = 0
   let activeChannel = null
-  let listTimeout = null
 
   function getChannel() {
     if (activeChannel && activeChannel.readyState === 'open') return activeChannel
@@ -62,22 +64,47 @@ export function useFileTransfer(fileChannel) {
       }
     }
 
+    errorMessage.value = ''
     if (dc.readyState === 'open') {
       isLoading.value = true
       send(dc, { type: 'get_home' })
+      if (homeTimeout) clearTimeout(homeTimeout)
+      homeTimeout = setTimeout(() => {
+        if (isLoading.value && !remotePath.value) {
+          isLoading.value = false
+          errorMessage.value = 'Remote filesystem connection timed out. Ensure remote companion agent or host app is active.'
+        }
+      }, 4500)
     } else {
       dc.onopen = () => {
         isLoading.value = true
+        errorMessage.value = ''
         send(dc, { type: 'get_home' })
+        if (homeTimeout) clearTimeout(homeTimeout)
+        homeTimeout = setTimeout(() => {
+          if (isLoading.value && !remotePath.value) {
+            isLoading.value = false
+            errorMessage.value = 'Remote filesystem connection timed out.'
+          }
+        }, 4500)
+      }
+      dc.onerror = () => {
+        isLoading.value = false
+        errorMessage.value = 'DataChannel error during file transfer.'
       }
     }
   }
 
   function handleMessage(data) {
+    if (homeTimeout) {
+      clearTimeout(homeTimeout)
+      homeTimeout = null
+    }
     if (listTimeout) {
       clearTimeout(listTimeout)
       listTimeout = null
     }
+    errorMessage.value = ''
 
     switch (data.type) {
       case 'home':
@@ -143,6 +170,7 @@ export function useFileTransfer(fileChannel) {
       case 'error':
         console.error('[FileTransfer] Error:', data.message)
         isLoading.value = false
+        errorMessage.value = data.message || 'File operation failed on remote host'
         activeTransfer.name = ''
         break
     }
@@ -187,6 +215,7 @@ export function useFileTransfer(fileChannel) {
 
   function listDirectory(path) {
     isLoading.value = true
+    errorMessage.value = ''
     const dc = getChannel()
     if (dc && dc.readyState === 'open') {
       send(dc, { type: 'list', path })
@@ -195,10 +224,22 @@ export function useFileTransfer(fileChannel) {
         if (isLoading.value) {
           console.warn('[FileTransfer] Directory listing timed out')
           isLoading.value = false
+          errorMessage.value = 'Remote directory listing timed out.'
         }
-      }, 5000)
+      }, 4500)
     } else {
       isLoading.value = false
+      errorMessage.value = 'File transfer channel is not connected.'
+    }
+  }
+
+  function retry() {
+    errorMessage.value = ''
+    const dc = getChannel()
+    if (dc) {
+      setupChannel(dc)
+    } else if (remotePath.value) {
+      listDirectory(remotePath.value)
     }
   }
 
@@ -313,9 +354,11 @@ export function useFileTransfer(fileChannel) {
     remotePlatform: readonly(remotePlatform),
     separator: readonly(separator),
     isLoading: readonly(isLoading),
+    errorMessage: readonly(errorMessage),
     activeTransfer,
     setupChannel,
     listDirectory,
+    retry,
     navigateUp,
     downloadFile,
     uploadFile,

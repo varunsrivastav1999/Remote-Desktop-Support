@@ -31,6 +31,9 @@ export function useWebRTC(signaling) {
 
   // ─── Control State (View Only by default) ─────────────────
   const isControlling = ref(false)
+  const controlPending = ref(false)
+  const controlError = ref('')
+  let controlTimer = null
 
   // ─── Authentication ──────────────────────────────────────
   const authRequired = ref(false)
@@ -213,6 +216,16 @@ export function useWebRTC(signaling) {
           console.error('[WebRTC] Signaling error:', msg.message)
           connectionState.value = 'failed'
         }
+
+        // Forward control confirmation and session updates to handleControlResponse
+        if (['control_granted', 'control_released', 'control_revoked', 'system_info', 'monitors', 'monitor_switched', 'quality_changed', 'chat', 'clipboard'].includes(msg.type)) {
+          handleControlResponse(JSON.stringify(msg))
+        } else if (msg.type === 'agent_control' || msg.type === 'reply') {
+          const inner = msg.data || msg
+          handleControlResponse(JSON.stringify(inner))
+        } else if (msg.data && typeof msg.data === 'object' && msg.data.type) {
+          handleControlResponse(JSON.stringify(msg.data))
+        }
       } catch (err) {
         console.error('[WebRTC] Error handling signaling message:', err)
       }
@@ -353,18 +366,35 @@ export function useWebRTC(signaling) {
           break
 
         case 'control_granted':
+          if (controlTimer) {
+            clearTimeout(controlTimer)
+            controlTimer = null
+          }
+          controlPending.value = false
           isControlling.value = true
-          console.log('[WebRTC] Host confirmed control granted -> CONTROL ACTIVE')
+          controlError.value = ''
+          console.log('[WebRTC] Remote machine confirmed control granted -> CONTROL ACTIVE')
           break
 
         case 'control_released':
+          if (controlTimer) {
+            clearTimeout(controlTimer)
+            controlTimer = null
+          }
+          controlPending.value = false
           isControlling.value = false
-          console.log('[WebRTC] Host confirmed control released -> VIEW ONLY')
+          console.log('[WebRTC] Remote machine confirmed control released -> VIEW ONLY')
           break
 
         case 'control_revoked':
+          if (controlTimer) {
+            clearTimeout(controlTimer)
+            controlTimer = null
+          }
+          controlPending.value = false
           isControlling.value = false
-          console.log('[WebRTC] Host revoked control -> VIEW ONLY')
+          controlError.value = 'Remote host revoked control permissions.'
+          console.log('[WebRTC] Remote host revoked control -> VIEW ONLY')
           break
 
         default:
@@ -379,26 +409,64 @@ export function useWebRTC(signaling) {
   // ─── Control Methods ─────────────────────────────────────
 
   function sendControl(event) {
+    let sent = false
+    // 1. Send via WebRTC DataChannel (low-latency direct peer-to-peer)
     if (dataChannel.value && dataChannel.value.readyState === 'open') {
-      dataChannel.value.send(JSON.stringify(event))
-      return true
+      try {
+        dataChannel.value.send(JSON.stringify(event))
+        sent = true
+      } catch (e) {
+        console.warn('[WebRTC] DataChannel send error:', e)
+      }
     }
-    return false
+
+    // 2. Dual-transport fallback via Signaling WebSocket
+    // Always also send session management commands via signaling to reach companion agents
+    const isSessionCtrl = ['take_control', 'release_control', 'get_monitors'].includes(event.type)
+    if (!sent || isSessionCtrl) {
+      try {
+        if (signaling && (signaling.isConnected?.value || signaling.send)) {
+          signaling.send({ type: 'agent_control', data: event })
+          sent = true
+        }
+      } catch (e) {
+        console.warn('[WebRTC] Signaling send error:', e)
+      }
+    }
+    return sent
   }
 
   function sendAuth(password) { return sendControl({ type: 'auth', password }) }
 
   function takeControl() {
-    isControlling.value = true
+    controlPending.value = true
+    controlError.value = ''
+    console.log('[WebRTC] Requesting Take Control from remote machine...')
+
+    // Dispatch take_control request to remote host peer and companion daemon
     sendControl({ type: 'take_control' })
-    console.log('[WebRTC] Take Control sent -> isControlling = true')
+
+    if (controlTimer) clearTimeout(controlTimer)
+    controlTimer = setTimeout(() => {
+      if (controlPending.value && !isControlling.value) {
+        controlPending.value = false
+        controlError.value = 'Remote machine did not acknowledge Take Control within 4.5s. Ensure remote host or companion agent is active.'
+        console.warn('[WebRTC] Take Control timed out without remote acknowledgment.')
+      }
+    }, 4500)
+
     return true
   }
 
   function releaseControl() {
+    if (controlTimer) {
+      clearTimeout(controlTimer)
+      controlTimer = null
+    }
+    controlPending.value = false
     isControlling.value = false
     sendControl({ type: 'release_control' })
-    console.log('[WebRTC] Release Control sent -> isControlling = false')
+    console.log('[WebRTC] Release Control sent -> VIEW ONLY')
     return true
   }
 
@@ -593,6 +661,8 @@ export function useWebRTC(signaling) {
     offerReceived: readonly(offerReceived),
     waitingForHost: readonly(waitingForHost),
     isControlling: readonly(isControlling),
+    controlPending: readonly(controlPending),
+    controlError: readonly(controlError),
     takeControl,
     releaseControl,
     toggleControl,

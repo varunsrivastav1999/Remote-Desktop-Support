@@ -44,6 +44,15 @@
           Loading...
         </div>
 
+        <div v-else-if="ft.errorMessage.value" class="file-empty file-error-box">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" style="margin-bottom: 8px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <p class="file-error-text">{{ ft.errorMessage.value }}</p>
+          <button class="btn-retry" @click="ft.retry()">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Retry Connection
+          </button>
+        </div>
+
         <div v-else-if="ft.remoteEntries.value.length === 0" class="file-empty">
           <p>Empty directory</p>
         </div>
@@ -331,6 +340,42 @@ function formatSize(bytes) {
 .upload-btn:hover { background: #b71c1c; }
 
 .file-hint { font-size: 0.68rem; color: rgba(255,255,255,0.3); }
+
+.file-error-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.file-error-text {
+  font-size: 0.78rem;
+  color: #fca5a5;
+  margin-bottom: 12px;
+  max-width: 260px;
+  line-height: 1.4;
+}
+
+.btn-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-retry:hover {
+  background: rgba(239, 68, 68, 0.35);
+  color: #ffffff;
+}
 
 @keyframes spin { to { transform: rotate(360deg); } }
 

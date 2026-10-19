@@ -292,6 +292,134 @@ fn fs_list_dir(dir_path: String) -> Result<Vec<FileEntry>, String> {
     Ok(results)
 }
 
+const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(data: &[u8]) -> String {
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+
+        result.push(BASE64_ALPHABET[(b0 >> 2) as usize] as char);
+        result.push(BASE64_ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(BASE64_ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(BASE64_ALPHABET[(b2 & 0x3f) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if clean.len() % 4 != 0 {
+        return None;
+    }
+    let mut result = Vec::with_capacity(clean.len() / 4 * 3);
+    let decode_char = |c: u8| -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    for chunk in clean.chunks(4) {
+        let c0 = decode_char(chunk[0])?;
+        let c1 = decode_char(chunk[1])?;
+        result.push((c0 << 2) | (c1 >> 4));
+        if chunk[2] != b'=' {
+            let c2 = decode_char(chunk[2])?;
+            result.push(((c1 & 0x0f) << 4) | (c2 >> 2));
+            if chunk[3] != b'=' {
+                let c3 = decode_char(chunk[3])?;
+                result.push(((c2 & 0x03) << 6) | c3);
+            }
+        }
+    }
+    Some(result)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ReadChunkResult {
+    data: String,
+    size: usize,
+    total_size: u64,
+    eof: bool,
+    name: String,
+}
+
+#[tauri::command]
+fn fs_read_chunk(file_path: String, offset: u64, size: usize) -> Result<ReadChunkResult, String> {
+    use std::io::Seek;
+    let path = PathBuf::from(&file_path);
+    if !path.exists() {
+        return Err("File not found".to_string());
+    }
+    let mut file = fs::File::open(&path).map_err(|e| e.to_string())?;
+    let total_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    file.seek(std::io::SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; size];
+    let bytes_read = file.read(&mut buf).map_err(|e| e.to_string())?;
+    buf.truncate(bytes_read);
+    let eof = offset + (bytes_read as u64) >= total_size || bytes_read == 0;
+    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    Ok(ReadChunkResult {
+        data: base64_encode(&buf),
+        size: bytes_read,
+        total_size,
+        eof,
+        name,
+    })
+}
+
+#[tauri::command]
+fn fs_write_chunk(dest_dir: String, filename: String, chunk_b64: String, offset: u64) -> Result<(), String> {
+    use std::io::Seek;
+    let dir = PathBuf::from(&dest_dir);
+    if !dir.exists() {
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    let target = dir.join(&filename);
+    let data = base64_decode(&chunk_b64).ok_or_else(|| "Invalid base64 payload".to_string())?;
+    let mut file = if offset == 0 {
+        fs::File::create(&target).map_err(|e| e.to_string())?
+    } else {
+        fs::OpenOptions::new().write(true).open(&target).map_err(|e| e.to_string())?
+    };
+    file.seek(std::io::SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    file.write_all(&data).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn fs_delete(target_path: String) -> Result<(), String> {
+    let p = PathBuf::from(&target_path);
+    if !p.exists() {
+        return Ok(());
+    }
+    if p.is_dir() {
+        fs::remove_dir_all(&p).map_err(|e| e.to_string())
+    } else {
+        fs::remove_file(&p).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn fs_mkdir(target_path: String) -> Result<(), String> {
+    let p = PathBuf::from(&target_path);
+    fs::create_dir_all(&p).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -306,7 +434,11 @@ pub fn run() {
             read_terminal,
             close_terminal,
             fs_get_home,
-            fs_list_dir
+            fs_list_dir,
+            fs_read_chunk,
+            fs_write_chunk,
+            fs_delete,
+            fs_mkdir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -599,12 +599,17 @@ async def run_websocket_client(server_url, device_id):
                         mtype = data.get("type")
                         req_id = data.get("req_id")
 
-                        if mtype in ("mousemove", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "scroll"):
+                        if mtype == "take_control":
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "take_control", "req_id": req_id, "status": "granted"}))
+                            await ws.send(json.dumps({"type": "control_granted"}))
+                        elif mtype in ("release_control", "release_all"):
+                            release_all_inputs()
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "release_control", "req_id": req_id, "status": "released"}))
+                            await ws.send(json.dumps({"type": "control_released"}))
+                        elif mtype in ("mousemove", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "scroll"):
                             execute_mouse(data)
                         elif mtype in ("keydown", "keyup"):
                             execute_key(data)
-                        elif mtype in ("release_control", "release_all"):
-                            release_all_inputs()
                         elif mtype == "terminal":
                             result = execute_terminal(data)
                             await ws.send(json.dumps({"type": "reply", "reply_to": "terminal", "req_id": req_id, **result}))
@@ -642,6 +647,45 @@ async def run_websocket_client(server_url, device_id):
 # Main Entry Point
 # ═════════════════════════════════════════════════════════════
 
+def get_or_generate_device_id(custom_id=None):
+    if custom_id:
+        return custom_id.strip()
+    env_id = os.environ.get("DEVICE_ID")
+    if env_id:
+        return env_id.strip()
+
+    id_file = os.path.expanduser("~/.remote_desktop_device_id")
+    if os.path.exists(id_file):
+        try:
+            with open(id_file, "r") as f:
+                saved = f.read().strip()
+                if saved:
+                    return saved
+        except Exception:
+            pass
+
+    if sys.stdin.isatty():
+        try:
+            val = input("\nEnter your Device ID shown on the Host screen (e.g. AG-XXX-XXX-XXX) [or Enter for auto]: ").strip()
+            if val:
+                return val
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting.")
+            sys.exit(0)
+
+    # Auto-generate persistent device ID
+    import random
+    n = f"{random.randint(100, 999)}-{random.randint(100, 999)}-{random.randint(100, 999)}"
+    gen_id = f"AG-{n}"
+    try:
+        with open(id_file, "w") as f:
+            f.write(gen_id)
+    except Exception:
+        pass
+    print(f"[*] Generated persistent Device ID: {gen_id}")
+    return gen_id
+
+
 def main():
     parser = argparse.ArgumentParser(description="Remote Desktop Support Native Host Companion Agent")
     parser.add_argument("--device", "-d", help="Your Device ID (e.g. AG-816-555-726) shown on screen")
@@ -652,19 +696,7 @@ def main():
     t = threading.Thread(target=start_http_server, daemon=True)
     t.start()
 
-    device_id = args.device
-    if not device_id:
-        print("=" * 65)
-        print(" Remote Desktop Support — Native Host Companion Agent")
-        print(f" • Detected Screen: {SCREEN_WIDTH} x {SCREEN_HEIGHT}")
-        print(f" • Input Support: {'pynput' if HAS_PYNPUT else ('xdotool' if HAS_XDOTOOL else 'None')}")
-        print(f" • Local HTTP listener: http://127.0.0.1:{PORT}")
-        print("=" * 65)
-        try:
-            device_id = input("\nEnter your Device ID shown on the Host screen (e.g. AG-XXX-XXX-XXX): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nExiting.")
-            sys.exit(0)
+    device_id = get_or_generate_device_id(args.device)
 
     if device_id:
         # Normalize Device ID
@@ -677,7 +709,7 @@ def main():
         except KeyboardInterrupt:
             print("\nStopping Native Companion Agent...")
     else:
-        print("[*] No Device ID supplied. Running in standalone local HTTP mode on 127.0.0.1:8765...")
+        print("[*] Running in standalone local HTTP mode on 127.0.0.1:8765...")
         try:
             t.join()
         except KeyboardInterrupt:

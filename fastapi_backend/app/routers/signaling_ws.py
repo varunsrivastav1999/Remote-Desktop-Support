@@ -104,15 +104,21 @@ async def device_notification_endpoint(websocket: WebSocket, device_id: str) -> 
 async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None:
     redis_client: redis.Redis = websocket.app.state.redis
     norm_device_id = normalize_device_id(device_id)
+    raw_device_id = device_id.strip()
 
     await websocket.accept()
-    agent_channel = f"channel:agent:{norm_device_id}"
+    agent_channel_norm = f"channel:agent:{norm_device_id}"
+    agent_channel_raw = f"channel:agent:{raw_device_id}"
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe(agent_channel)
+    await pubsub.subscribe(agent_channel_norm)
+    if agent_channel_raw != agent_channel_norm:
+        await pubsub.subscribe(agent_channel_raw)
     logger.info(f"Native companion agent connected for device: {norm_device_id}")
 
     # Set agent presence in Redis
     await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
+    if raw_device_id != norm_device_id:
+        await redis_client.set(f"device:{raw_device_id}:agent_online", "1", ex=60)
     await websocket.send_json({"type": "agent_connected", "device_id": norm_device_id})
 
     async def forward_to_agent():
@@ -144,21 +150,25 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
                 for k, v in data.items():
                     flat_info[k] = json.dumps(v) if isinstance(v, (list, dict, bool)) else str(v)
                 await redis_client.hset(f"device:{norm_device_id}:agent_info", mapping=flat_info)
-                session_channel = f"channel:session:{norm_device_id}"
-                await redis_client.publish(session_channel, json.dumps({
+                session_payload = json.dumps({
                     "connection_id": "agent",
                     "sender_role": "agent",
                     "target_role": None,
                     "data": {"type": "agent_info", **data},
-                }))
-            elif msg_type == "reply":
-                session_channel = f"channel:session:{norm_device_id}"
-                await redis_client.publish(session_channel, json.dumps({
+                })
+                await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
+                if raw_device_id != norm_device_id:
+                    await redis_client.publish(f"channel:session:{raw_device_id}", session_payload)
+            elif msg_type in ("reply", "control_granted", "control_released", "control_revoked"):
+                session_payload = json.dumps({
                     "connection_id": "agent",
                     "sender_role": "agent",
                     "target_role": None,
                     "data": data,
-                }))
+                })
+                await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
+                if raw_device_id != norm_device_id:
+                    await redis_client.publish(f"channel:session:{raw_device_id}", session_payload)
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -166,7 +176,11 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
     finally:
         task.cancel()
         await redis_client.delete(f"device:{norm_device_id}:agent_online")
-        await pubsub.unsubscribe(agent_channel)
+        if raw_device_id != norm_device_id:
+            await redis_client.delete(f"device:{raw_device_id}:agent_online")
+        await pubsub.unsubscribe(agent_channel_norm)
+        if agent_channel_raw != agent_channel_norm:
+            await pubsub.unsubscribe(agent_channel_raw)
         await pubsub.aclose()
         logger.info(f"Native companion agent disconnected for device: {norm_device_id}")
 
@@ -219,24 +233,27 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
     connection_id = str(uuid.uuid4())
     role: Optional[str] = None
+    norm_code = normalize_device_id(code)
     channel_name = f"channel:session:{code}"
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(channel_name)
-    logger.info(f"WebSocket connected for session {code} [{connection_id}]")
+    if norm_code != code:
+        await pubsub.subscribe(f"channel:session:{norm_code}")
+    logger.info(f"WebSocket connected for session {code} (norm: {norm_code}) [{connection_id}]")
 
     async def send_error(msg: str) -> None:
         await websocket.send_json({"type": "error", "message": msg})
 
     async def publish_event(sender_role: str, data: dict, target_role: Optional[str]) -> None:
-        await redis_client.publish(
-            channel_name,
-            json.dumps({
-                "connection_id": connection_id,
-                "sender_role": sender_role,
-                "target_role": target_role,
-                "data": data,
-            }),
-        )
+        payload = json.dumps({
+            "connection_id": connection_id,
+            "sender_role": sender_role,
+            "target_role": target_role,
+            "data": data,
+        })
+        await redis_client.publish(channel_name, payload)
+        if norm_code != code:
+            await redis_client.publish(f"channel:session:{norm_code}", payload)
 
     async def listen_for_peer() -> None:
         try:
@@ -406,13 +423,29 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 if role == "host" and message_type == "offer":
                     await redis_client.delete(f"device:{code}:pending_request")
                     await redis_client.delete(f"session:{code}:pending_request")
+                    await redis_client.delete(f"device:{norm_code}:pending_request")
+                    await redis_client.delete(f"session:{norm_code}:pending_request")
             elif message_type == "ice_restart_request":
                 target_role = "host"
-            elif message_type == "agent_control":
-                agent_channel = f"channel:agent:{code}"
+            elif message_type in ("agent_control", "take_control", "release_control", "control_event"):
                 ctrl_payload = data.get("data") if "data" in data else data
-                await redis_client.publish(agent_channel, json.dumps(ctrl_payload))
+                if message_type in ("take_control", "release_control") and isinstance(ctrl_payload, dict):
+                    ctrl_payload.setdefault("type", message_type)
+                ctrl_json = json.dumps(ctrl_payload)
+                # Dispatch to native companion agent channels (both normalized and raw)
+                await redis_client.publish(f"channel:agent:{norm_code}", ctrl_json)
+                if norm_code != code:
+                    await redis_client.publish(f"channel:agent:{code}", ctrl_json)
+                # Forward to host peer in the session if sent by client
+                target_role = "host" if role == "client" else "client"
+                await publish_event(role, data, target_role)
                 continue
+            elif message_type in ("control_granted", "control_released", "control_revoked", "system_info", "monitors", "monitor_switched", "quality_changed", "host_stats"):
+                # Forward from host to client
+                target_role = "client"
+            elif message_type in ("chat", "clipboard"):
+                # Bidirectional
+                target_role = "client" if role == "host" else "host"
             else:
                 await send_error(f"Message type '{message_type}' is not allowed for role '{role}'.")
                 continue
@@ -438,5 +471,7 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     other_role,
                 )
         await pubsub.unsubscribe(channel_name)
+        if norm_code != code:
+            await pubsub.unsubscribe(f"channel:session:{norm_code}")
         await pubsub.aclose()
         logger.info(f"WebSocket disconnected for session {code} [{connection_id}]")

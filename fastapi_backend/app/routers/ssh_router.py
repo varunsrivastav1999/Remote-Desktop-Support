@@ -101,6 +101,15 @@ async def ssh_websocket_endpoint(websocket: WebSocket, device_id: str):
         password = init_data.get("password")
         key_data = init_data.get("private_key")
 
+        # Strictly forbid localhost or container internal loopback
+        if str(target_host).lower() in ("localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"):
+            await websocket.send_json({
+                "type": "error",
+                "message": "Local loopback connections are strictly forbidden. SSH must connect to the remote device.",
+            })
+            await websocket.close()
+            return
+
         if not target_host:
             await websocket.send_json({
                 "type": "error",
@@ -111,7 +120,7 @@ async def ssh_websocket_endpoint(websocket: WebSocket, device_id: str):
 
         await websocket.send_json({
             "type": "status",
-            "message": f"Connecting to remote SSH at {username}@{target_host}:{target_port}...",
+            "message": f"Connecting to remote SSH at {username}@{target_host}:{target_port} (Device {norm_id})...",
         })
 
         client = paramiko.SSHClient()
@@ -136,7 +145,7 @@ async def ssh_websocket_endpoint(websocket: WebSocket, device_id: str):
         except Exception as conn_err:
             await websocket.send_json({
                 "type": "error",
-                "message": f"SSH connection to {target_host}:{target_port} failed: {conn_err}",
+                "message": f"SSH connection to remote host {target_host}:{target_port} failed: {conn_err}. (Tip: If port 22 is firewalled, use the WebRTC Remote Shell tab).",
             })
             await websocket.close()
             return
@@ -151,7 +160,19 @@ async def ssh_websocket_endpoint(websocket: WebSocket, device_id: str):
             "type": "connected",
             "target": f"{username}@{target_host}:{target_port}",
             "device_id": norm_id,
+            "hostname": remote_info.get("hostname", ""),
+            "os_name": remote_info.get("os_name", ""),
         })
+
+        banner = (
+            f"\r\n\x1b[1;32m════════════════════════════════════════════════════════════════════\x1b[0m\r\n"
+            f"  \x1b[1;32mCONNECTED TO REMOTE DEVICE: \x1b[1;33m{norm_id}\x1b[0m\r\n"
+            f"  \x1b[1;37m• Remote Target: \x1b[1;36m{username}@{target_host}:{target_port}\x1b[0m\r\n"
+            f"  \x1b[1;37m• Hostname:      \x1b[1;34m{remote_info.get('hostname', 'Remote System')}\x1b[0m\r\n"
+            f"  \x1b[1;37m• Remote OS:     \x1b[1;35m{remote_info.get('os_name', 'Remote System')}\x1b[0m\r\n"
+            f"\x1b[1;32m════════════════════════════════════════════════════════════════════\x1b[0m\r\n"
+        )
+        await websocket.send_text(banner)
 
         while not stop_event.is_set():
             msg = await websocket.receive_text()

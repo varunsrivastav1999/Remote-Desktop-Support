@@ -10,6 +10,7 @@
       :current-monitor="webrtc.currentMonitor.value"
       :unread-count="webrtc.unreadCount.value"
       :is-controlling="webrtc.isControlling.value"
+      :control-pending="webrtc.controlPending.value"
       @take-control="webrtc.takeControl()"
       @release-control="webrtc.releaseControl()"
       @clipboard-sync="handleClipboardSync"
@@ -88,7 +89,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSignaling } from '../composables/useSignaling.js'
 import { useWebRTC } from '../composables/useWebRTC.js'
@@ -191,8 +192,22 @@ let toastTimeout = null
 function showToast(msg) {
   toastMessage.value = msg
   if (toastTimeout) clearTimeout(toastTimeout)
-  toastTimeout = setTimeout(() => { toastMessage.value = '' }, 3200)
+  toastTimeout = setTimeout(() => { toastMessage.value = '' }, 3600)
 }
+
+watch(webrtc.isControlling, (active) => {
+  if (active) {
+    showToast('Control Active: Your mouse and keyboard now control the remote computer.')
+  } else {
+    showToast('View Only: Control released. Remote screen remains visible.')
+  }
+})
+
+watch(webrtc.controlError, (err) => {
+  if (err) {
+    showToast(`Error: ${err}`)
+  }
+})
 
 async function handleClipboardSync() {
   if (navigator.clipboard && window.isSecureContext) {

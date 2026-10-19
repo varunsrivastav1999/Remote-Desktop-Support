@@ -222,14 +222,27 @@ function createHostSession() {
   async function handleSignalingMessage(message) {
     try {
       if (message.type === 'reply' || message.reply_to) {
-        const reqId = message.req_id
+        const reqId = message.req_id || message.data?.req_id
         if (reqId && pendingAgentRequests.has(reqId)) {
           const req = pendingAgentRequests.get(reqId)
           pendingAgentRequests.delete(reqId)
           clearTimeout(req.timer)
-          req.resolve(message)
+          req.resolve(message.data || message)
           return
         }
+      }
+
+      if (message.type === 'take_control' || (message.type === 'agent_control' && message.data?.type === 'take_control')) {
+        await handleControlMessage({ type: 'take_control' })
+        return
+      }
+      if (message.type === 'release_control' || (message.type === 'agent_control' && message.data?.type === 'release_control')) {
+        await handleControlMessage({ type: 'release_control' })
+        return
+      }
+      if (message.type === 'agent_control' && message.data) {
+        await handleControlMessage(message.data)
+        return
       }
 
       if (message.type === 'registered' && message.role === 'host') {
@@ -482,7 +495,18 @@ function createHostSession() {
             let fileName = msg.path.split('/').pop().split('\\').pop()
             let eof = false
 
-            const initial = await requestAgent({ type: 'download', path: msg.path, offset: 0, size: chunkSize }, 10000)
+            async function readChunk(targetPath, off, sz) {
+              if (isNativeApp()) {
+                try {
+                  return await invoke('fs_read_chunk', { filePath: targetPath, offset: off, size: sz })
+                } catch (e) {
+                  return { error: e.message || String(e) }
+                }
+              }
+              return await requestAgent({ type: 'download', path: targetPath, offset: off, size: sz }, 10000)
+            }
+
+            const initial = await readChunk(msg.path, 0, chunkSize)
             if (initial && !initial.error) {
               fileName = initial.name || fileName
               totalSize = initial.total_size || 0
@@ -503,7 +527,7 @@ function createHostSession() {
               eof = initial.eof || (offset >= totalSize)
 
               while (!eof && offset < totalSize) {
-                const nextRes = await requestAgent({ type: 'download', path: msg.path, offset, size: chunkSize }, 10000)
+                const nextRes = await readChunk(msg.path, offset, chunkSize)
                 if (!nextRes || nextRes.error || !nextRes.data) break
                 fileChannel.send(JSON.stringify({
                   type: 'download_chunk',
@@ -645,6 +669,11 @@ function createHostSession() {
       if (message.type === 'take_control') {
         controlEnabled.value = true
         sendControl({ type: 'control_granted' })
+        try {
+          signaling.send({ type: 'control_granted' })
+          signaling.send({ type: 'agent_control', data: { type: 'take_control' } })
+          callAgent('control', 'POST', { type: 'take_control' })
+        } catch (_) {}
         statusText.value = 'Remote user has taken control.'
         return
       }
@@ -653,8 +682,11 @@ function createHostSession() {
         controlEnabled.value = false
         releasePressedInput()
         sendControl({ type: 'control_released' })
-        signaling.send({ type: 'agent_control', data: { type: 'release_control' } })
-        callAgent('control', 'POST', { type: 'release_control' })
+        try {
+          signaling.send({ type: 'control_released' })
+          signaling.send({ type: 'agent_control', data: { type: 'release_control' } })
+          callAgent('control', 'POST', { type: 'release_control' })
+        } catch (_) {}
         statusText.value = 'Remote user released control. View only mode.'
         return
       }
