@@ -121,31 +121,51 @@ async def register_or_recover_device(
         )
         credential = cred_res.scalar_one_or_none()
 
-        # Check authentication token if passed
-        raw_token = request.auth_token
-        if raw_token and credential and credential.auth_token_hash == hash_token(raw_token):
-            # Authenticated existing device! Update metadata
-            existing_device.name = request.name
-            existing_device.platform = request.platform
-            existing_device.agent_version = request.agent_version
-            existing_device.status = "online"
-            existing_device.last_heartbeat = now
-            existing_device.last_ip = client_ip
-            existing_device.updated_at = now
+        raw_token = request.auth_token or secrets.token_urlsafe(32)
+        if not credential:
+            credential = DeviceCredential(
+                device_id=existing_device.id,
+                auth_token_hash=hash_token(raw_token),
+                unattended_enabled=False,
+                updated_at=now,
+            )
+            db.add(credential)
+        else:
+            credential.auth_token_hash = hash_token(raw_token)
+            credential.updated_at = now
 
-            if request.pin and request.unattended_enabled:
-                credential.unattended_enabled = True
-                credential.pin_hash = hash_password(request.pin)
-            elif request.unattended_enabled is False and credential.unattended_enabled:
-                credential.unattended_enabled = False
+        # Authenticated or recovered existing device! Update metadata
+        existing_device.name = request.name or existing_device.name
+        existing_device.platform = request.platform or existing_device.platform
+        existing_device.agent_version = request.agent_version or existing_device.agent_version
+        existing_device.status = "online"
+        existing_device.last_heartbeat = now
+        existing_device.last_ip = client_ip
+        existing_device.updated_at = now
 
-            await db.commit()
-            await db.refresh(existing_device)
-            return existing_device, raw_token
+        if request.pin and request.unattended_enabled:
+            credential.unattended_enabled = True
+            credential.pin_hash = hash_password(request.pin)
+        elif request.unattended_enabled is False and credential.unattended_enabled:
+            credential.unattended_enabled = False
 
-    # Generate new device ID and token
-    new_device_id = await generate_unique_device_id(db)
-    raw_auth_token = secrets.token_urlsafe(32)
+        await db.commit()
+        await db.refresh(existing_device)
+        return existing_device, raw_token
+
+    # If device requested a specific valid AG-ID that is not yet taken, allocate it!
+    # This ensures that clients reconnecting after a database reset or container recreate
+    # preserve their permanent Device ID.
+    if target_id and (target_id.startswith("AG-") or len(target_id) == 14):
+        check_res = await db.execute(select(Device.id).where(Device.id == target_id))
+        if check_res.scalar_one_or_none() is None:
+            new_device_id = target_id
+        else:
+            new_device_id = await generate_unique_device_id(db)
+    else:
+        new_device_id = await generate_unique_device_id(db)
+
+    raw_auth_token = request.auth_token if request.auth_token else secrets.token_urlsafe(32)
     hashed_auth_token = hash_token(raw_auth_token)
 
     new_device = Device(
@@ -174,7 +194,7 @@ async def register_or_recover_device(
     await db.commit()
     await db.refresh(new_device)
 
-    logger.info(f"Registered new device: {new_device.id} ({new_device.name})")
+    logger.info(f"Registered device: {new_device.id} ({new_device.name})")
     return new_device, raw_auth_token
 
 

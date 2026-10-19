@@ -32,6 +32,7 @@ class HeartbeatResponse(BaseModel):
     status: str
     device_id: str
     server_time: str
+    pending_request: Optional[dict] = None
 
 
 class DeviceResponse(BaseModel):

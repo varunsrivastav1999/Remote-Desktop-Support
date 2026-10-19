@@ -113,11 +113,21 @@ async def device_heartbeat(
     )
     await redis_client.expire(f"session:{norm_id}", 86400)
 
+    import json
+    pending_payload = None
+    pending_raw = await redis_client.get(f"device:{norm_id}:pending_request")
+    if pending_raw:
+        try:
+            pending_payload = json.loads(pending_raw)
+        except Exception:
+            pass
+
     from datetime import datetime, timezone
     return HeartbeatResponse(
         status="ok",
         device_id=norm_id,
         server_time=datetime.now(timezone.utc).isoformat(),
+        pending_request=pending_payload,
     )
 
 

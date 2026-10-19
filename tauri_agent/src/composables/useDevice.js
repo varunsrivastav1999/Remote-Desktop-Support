@@ -184,30 +184,49 @@ async function registerDevice() {
 }
 
 /**
- * Heartbeat sender (every 20 seconds)
+ * Heartbeat sender (every 15 seconds)
  */
 function startHeartbeat() {
   stopHeartbeat()
   heartbeatTimer = setInterval(async () => {
-    if (!deviceId.value || !deviceToken.value) return
+    if (!deviceId.value) return
     const settings = loadNetworkSettings()
     try {
-      await fetch(apiUrl('/api/v1/devices/heartbeat', settings), {
+      const res = await fetch(apiUrl('/api/v1/devices/heartbeat', settings), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           device_id: deviceId.value,
-          auth_token: deviceToken.value,
+          auth_token: deviceToken.value || '',
           platform: hostPlatform(),
         }),
       })
-      if (deviceStatus.value === 'offline') {
-        deviceStatus.value = 'online'
+
+      if (res.status === 401 || res.status === 404) {
+        console.warn('[Remote Support] Heartbeat credentials rejected by server, re-registering...')
+        await registerDevice()
+        return
+      }
+
+      if (res.ok) {
+        const data = await res.json()
+        if (deviceStatus.value === 'offline' || deviceStatus.value === 'connecting') {
+          deviceStatus.value = 'online'
+        }
+        if (data.pending_request) {
+          console.log('[Remote Desktop] Heartbeat delivered pending request:', data.pending_request)
+          handlePushMessage(data.pending_request)
+        }
+      }
+
+      // Ensure device push WebSocket is connected
+      if (!deviceWs || deviceWs.readyState === WebSocket.CLOSED) {
+        connectDevicePushWs()
       }
     } catch (e) {
       console.warn('[Remote Support] Heartbeat failed:', e)
     }
-  }, 20000)
+  }, 15000)
 }
 
 function stopHeartbeat() {

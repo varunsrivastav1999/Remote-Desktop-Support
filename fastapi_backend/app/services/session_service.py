@@ -67,7 +67,21 @@ async def create_connection_request(
     target_res = await db.execute(select(Device).where(Device.id == target_id))
     target = target_res.scalar_one_or_none()
     if not target:
-        raise ValueError(f"Target device {target_id} not found.")
+        if target_id.startswith("AG-") or len(target_id) == 14:
+            target = Device(
+                id=target_id,
+                name=f"Device {target_id}",
+                platform="unknown",
+                agent_version="Remote Desktop Agent 1.0",
+                status="online",
+                last_heartbeat=now,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(target)
+            await db.flush()
+        else:
+            raise ValueError(f"Target device {target_id} not found.")
 
     # Validate target online - check Redis presence, session room, or DB status
     online = await is_device_online(redis_client, target_id)
@@ -76,7 +90,8 @@ async def create_connection_request(
         if has_room or target.status == "online":
             online = True
     if not online:
-        raise ValueError(f"Device {target_id} is currently offline.")
+        logger.info(f"Target {target_id} presence not yet detected; queueing pending connection request")
+        await set_device_online(redis_client, target_id, ttl=45)
 
     expires_at = now + timedelta(seconds=settings.CONNECTION_REQUEST_TTL_SECONDS)
     request_id = str(uuid.uuid4())
@@ -146,6 +161,20 @@ async def create_connection_request(
         "session_code": target_id,
         "auto_accept": auto_accept,
     })
+
+    # Cache pending request in Redis so late-connecting or polling hosts receive it immediately
+    if not auto_accept:
+        await redis_client.set(
+            f"device:{target_id}:pending_request",
+            notification_payload,
+            ex=settings.CONNECTION_REQUEST_TTL_SECONDS,
+        )
+        await redis_client.set(
+            f"session:{target_id}:pending_request",
+            notification_payload,
+            ex=settings.CONNECTION_REQUEST_TTL_SECONDS,
+        )
+
     await redis_client.publish(device_channel(target_id), notification_payload)
     await redis_client.publish(
         session_channel(target_id),
@@ -248,6 +277,20 @@ async def process_approval(
                 "ws_url": f"/ws/{conn_req.target_device_id}",
             }),
         )
+        # Notify waiting client in signaling room directly
+        await redis_client.publish(
+            session_channel(conn_req.target_device_id),
+            json.dumps({
+                "connection_id": "system",
+                "sender_role": "host",
+                "target_role": "client",
+                "data": {
+                    "type": "connection_accepted",
+                    "request_id": request_id,
+                    "session_token": session_token,
+                },
+            }),
+        )
     else:
         conn_req.status = "rejected"
         await redis_client.publish(
@@ -269,6 +312,10 @@ async def process_approval(
                 "data": {"type": "permission_denied", "message": "Host rejected connection request."},
             }),
         )
+
+    # Clear pending request from Redis
+    await redis_client.delete(f"device:{conn_req.target_device_id}:pending_request")
+    await redis_client.delete(f"session:{conn_req.target_device_id}:pending_request")
 
     await db.commit()
     await db.refresh(conn_req)
