@@ -19,10 +19,17 @@ let deviceWs = null
 let wsReconnectTimer = null
 let wsReconnectAttempts = 0
 
+function getTabSessionId() {
+  if (typeof window === 'undefined') return 'server'
+  if (!window.name || !window.name.startsWith('rs_tab_')) {
+    window.name = `rs_tab_${Math.random().toString(36).slice(2, 10)}`
+  }
+  return window.name
+}
+
 function getDeviceStorage() {
   // In native desktop app (Tauri), persist permanently in localStorage.
-  // In web browsers (Chrome, Firefox, Edge), use sessionStorage so each browser tab
-  // gets its own independent Device ID, avoiding collision when testing in multiple tabs.
+  // In web browsers (Chrome, Firefox, Edge), use sessionStorage scoped per tab.
   if (isNativeApp()) {
     return localStorage
   }
@@ -47,6 +54,21 @@ function hostLabel() {
 
 function loadSavedCredentials() {
   const storage = getDeviceStorage()
+
+  // In browser, ensure newly duplicated tabs get a fresh Device ID
+  if (!isNativeApp() && typeof window !== 'undefined') {
+    const currentTab = getTabSessionId()
+    const storedTab = storage.getItem('rs_tab_owner')
+    if (storedTab && storedTab !== currentTab) {
+      // Tab was duplicated or session cloned: start fresh
+      storage.removeItem(DEVICE_ID_KEY)
+      storage.removeItem(DEVICE_TOKEN_KEY)
+      deviceId.value = ''
+      deviceToken.value = ''
+    }
+    storage.setItem('rs_tab_owner', currentTab)
+  }
+
   const savedId = (storage.getItem(DEVICE_ID_KEY) || storage.getItem(LEGACY_ID_KEY) || '').trim()
   // Only accept valid permanent AG-XXX-XXX-XXX format.
   // If a stale legacy UUID is stored, discard it so backend allocates a proper AG ID.

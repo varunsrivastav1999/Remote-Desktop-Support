@@ -44,18 +44,40 @@ async def create_connection_request(
     if caller_id == target_id:
         raise ValueError("Cannot connect to your own device.")
 
+    now = datetime.now(timezone.utc)
+
+    # Ensure caller device exists in DB to prevent foreign key constraint violations
+    caller_res = await db.execute(select(Device).where(Device.id == caller_id))
+    caller = caller_res.scalar_one_or_none()
+    if not caller:
+        caller = Device(
+            id=caller_id,
+            name=caller_name or "Remote Client",
+            platform="unknown",
+            agent_version="Remote Desktop Agent 1.0",
+            status="online",
+            last_heartbeat=now,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(caller)
+        await db.flush()
+
     # Validate target exists
     target_res = await db.execute(select(Device).where(Device.id == target_id))
     target = target_res.scalar_one_or_none()
     if not target:
         raise ValueError(f"Target device {target_id} not found.")
 
-    # Validate target online
+    # Validate target online - check Redis presence, session room, or DB status
     online = await is_device_online(redis_client, target_id)
+    if not online:
+        has_room = await redis_client.exists(f"session:{target_id}")
+        if has_room or target.status == "online":
+            online = True
     if not online:
         raise ValueError(f"Device {target_id} is currently offline.")
 
-    now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=settings.CONNECTION_REQUEST_TTL_SECONDS)
     request_id = str(uuid.uuid4())
 
@@ -114,17 +136,30 @@ async def create_connection_request(
     await db.commit()
     await db.refresh(conn_request)
 
-    # Publish notification to target device
+    # Publish notification to target device on both device channel and session channel
+    notification_payload = json.dumps({
+        "type": "connection_request" if not auto_accept else "unattended_session_started",
+        "request_id": request_id,
+        "caller_device_id": caller_id,
+        "caller_name": caller_name,
+        "session_token": session_token,
+        "session_code": target_id,
+        "auto_accept": auto_accept,
+    })
+    await redis_client.publish(device_channel(target_id), notification_payload)
     await redis_client.publish(
-        device_channel(target_id),
+        session_channel(target_id),
         json.dumps({
-            "type": "connection_request" if not auto_accept else "unattended_session_started",
-            "request_id": request_id,
-            "caller_device_id": caller_id,
-            "caller_name": caller_name,
-            "session_token": session_token,
-            "session_code": target_id,
-            "auto_accept": auto_accept,
+            "connection_id": "system",
+            "sender_role": "client",
+            "target_role": "host",
+            "data": {
+                "type": "peer_joined",
+                "role": "client",
+                "caller_device_id": caller_id,
+                "caller_name": caller_name,
+                "request_id": request_id,
+            },
         }),
     )
 

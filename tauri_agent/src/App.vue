@@ -265,13 +265,10 @@ const nativeHost = isNativeApp()
 const hasIncomingRequest = computed(() => {
   // If user is currently in a remote session as caller, never show incoming host request modal
   if (router.currentRoute.value?.name === 'Session') return false
-  if (agentStatus.value === 'offline') return false
 
   const req = device.incomingRequest.value
-  const callerId = req?.callerDeviceId || hostSession.incomingCallerId.value
-  if (callerId && callerId === device.deviceId.value) return false
-
-  return Boolean(req || hostSession.pendingController.value)
+  const hasPending = hostSession.pendingController.value
+  return Boolean(req || hasPending)
 })
 const incomingCallerName = computed(() => device.incomingRequest.value?.callerName || hostSession.incomingCallerName.value || 'Remote Controller')
 const incomingCallerId = computed(() => device.incomingRequest.value?.callerDeviceId || hostSession.incomingCallerId.value || 'Remote Peer')
@@ -471,26 +468,40 @@ function cancelOutgoingRequest() {
 
 async function handleAcceptIncoming() {
   const req = device.incomingRequest.value
-  // Immediately dismiss the modal so it does not obstruct Chrome's screen picker!
+  const requestId = req?.requestId
+
+  // CRITICAL FIX FOR CHROME / BROWSER:
+  // getDisplayMedia() MUST be called directly in this user click gesture.
+  // Any awaits (network requests, router navigation) prior to calling getDisplayMedia()
+  // will cause Chrome to invalidate the transient user activation, throwing:
+  // "DOMException: getDisplayMedia must be called from a user gesture."
+  let ok = false
+  if (hostSession.localStream.value) {
+    ok = true
+  } else {
+    ok = await hostSession.start()
+  }
+
+  // Dismiss modal after screen selection attempt
   device.clearIncomingRequest?.()
   hostSession.pendingController.value = false
 
+  if (!ok) {
+    errorMsg.value = 'Screen sharing was cancelled or not selected.'
+    setTimeout(() => { errorMsg.value = '' }, 4000)
+    return
+  }
+
   try {
-    if (req && req.requestId && !req.requestId.startsWith('direct-')) {
-      await device.acceptRequest(req.requestId).catch(() => {})
+    if (requestId && !requestId.startsWith('direct-')) {
+      device.acceptRequest(requestId).catch(() => {})
     }
     // Navigate to host screen if not already there
     if (router.currentRoute.value?.name !== 'Host') {
       await router.push('/host')
     }
-    // Start host sharing session and initiate WebRTC offer immediately
-    const ok = await hostSession.start()
-    if (ok) {
-      await hostSession.allowController(true)
-    } else {
-      errorMsg.value = 'Screen sharing was cancelled or not selected.'
-      setTimeout(() => { errorMsg.value = '' }, 4000)
-    }
+    // Initiate WebRTC offer immediately
+    await hostSession.allowController(true)
   } catch (e) {
     errorMsg.value = 'Failed to accept connection request'
     setTimeout(() => { errorMsg.value = '' }, 4000)

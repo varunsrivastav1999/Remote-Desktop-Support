@@ -106,7 +106,7 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
 
     if not session:
         # Check if code is a registered Device ID or create a room for host
-        is_dev = await redis_client.exists(f"presence:device:{code}")
+        is_dev = await redis_client.exists(f"device:{code}:presence") or await redis_client.exists(f"presence:device:{code}")
         if not is_dev:
             from app.database import async_session_factory
             from app.models.device import Device
@@ -225,6 +225,11 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     # Notify host via device push channel that a client is waiting in room
                     caller_id = data.get("client_device_id") or "Remote Client"
                     caller_name = data.get("caller_name") or "Remote Controller"
+                    await redis_client.hset(
+                        f"session:{code}:client_info",
+                        mapping={"caller_device_id": caller_id, "caller_name": caller_name},
+                    )
+                    await redis_client.expire(f"session:{code}:client_info", 300)
                     await redis_client.publish(
                         f"channel:device:{code}",
                         json.dumps({
@@ -250,7 +255,18 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
 
                 # Check if other peer is already present in room
                 if await redis_client.exists(peer_key(other_role)):
-                    await websocket.send_json({"type": "peer_joined", "role": other_role})
+                    if role == "host":
+                        c_info = await redis_client.hgetall(f"session:{code}:client_info")
+                        c_id = c_info.get("caller_device_id", "Remote Client")
+                        c_name = c_info.get("caller_name", "Remote Controller")
+                        await websocket.send_json({
+                            "type": "peer_joined",
+                            "role": "client",
+                            "caller_device_id": c_id,
+                            "caller_name": c_name,
+                        })
+                    else:
+                        await websocket.send_json({"type": "peer_joined", "role": other_role})
                 elif role == "client":
                     # Inform client that signaling room is ready and waiting for host
                     await websocket.send_json({

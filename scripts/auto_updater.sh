@@ -27,8 +27,10 @@ while true; do
   LOCAL_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
   REMOTE_HASH=$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "")
 
-  if [ -n "$REMOTE_HASH" ] && [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
-    echo "[Auto-Updater] 🚀 New updates detected on origin/$BRANCH!"
+  BEHIND_COUNT=$(git rev-list HEAD..origin/"$BRANCH" --count 2>/dev/null || echo "0")
+
+  if [ -n "$REMOTE_HASH" ] && [ "$BEHIND_COUNT" -gt 0 ]; then
+    echo "[Auto-Updater] 🚀 New updates detected on origin/$BRANCH ($BEHIND_COUNT commits ahead)!"
     echo "  Current commit: $LOCAL_HASH"
     echo "  Target commit:  $REMOTE_HASH"
     echo "[Auto-Updater] Pulling latest changes..."

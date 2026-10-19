@@ -30,6 +30,23 @@
         <span v-else class="preview__badge">You are sharing</span>
       </section>
     </div>
+
+    <!-- Incoming Control Request Banner inside Host View -->
+    <div v-if="session.pendingController.value" class="host-approval-banner">
+      <div class="host-approval-info">
+        <span class="incoming-pulse-dot"></span>
+        <div>
+          <h4>Incoming Control Request</h4>
+          <p>
+            {{ session.incomingCallerName.value || 'Remote Controller' }} ({{ session.incomingCallerId.value || 'Remote Peer' }}) is requesting to view and control this screen.
+          </p>
+        </div>
+      </div>
+      <div class="host-approval-actions">
+        <button class="btn btn--danger" @click="session.denyController()">Deny</button>
+        <button class="btn btn--primary" @click="handleApproveHost">{{ approvalButton }}</button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -81,6 +98,14 @@ function leave() {
   router.push('/')
 }
 
+async function handleApproveHost() {
+  if (!session.localStream.value) {
+    const ok = await session.start()
+    if (!ok) return
+  }
+  await session.allowController(true)
+}
+
 onMounted(async () => {
   await session.ensureOnline()
   if (session.sessionCode.value) setHostedAddress(session.sessionCode.value, session.state.value)
@@ -106,4 +131,55 @@ onUnmounted(() => {
 .preview video { width:100%; height:100%; object-fit:contain; }
 .preview__empty { color:rgba(255,255,255,0.45); font-size:0.9rem; }
 .preview__badge { position:absolute; top:14px; left:14px; color:#fff; background:#d32f2f; padding:5px 10px; border-radius:20px; font-size:0.72rem; font-weight:600; }
+
+.host-approval-banner {
+  margin: 0 28px 24px;
+  background: var(--ad-surface);
+  border: 1px solid var(--color-accent-orange, #f57c00);
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  box-shadow: 0 8px 24px rgba(245, 124, 0, 0.2);
+  animation: pulse-border 2s infinite;
+}
+.host-approval-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.host-approval-info h4 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  color: var(--ad-text);
+}
+.host-approval-info p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ad-text-muted);
+}
+.host-approval-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.incoming-pulse-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-accent-orange, #f57c00);
+  box-shadow: 0 0 12px var(--color-accent-orange, #f57c00);
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+@keyframes pulse-border {
+  0%, 100% { border-color: rgba(245, 124, 0, 0.5); }
+  50% { border-color: rgba(245, 124, 0, 1); }
+}
 </style>
