@@ -240,7 +240,7 @@ function createHostSession() {
         await handleControlMessage({ type: 'release_control' })
         return
       }
-      if (message.type === 'agent_control' && message.data) {
+      if ((message.type === 'agent_control' || message.type === 'control_event') && message.data) {
         await handleControlMessage(message.data)
         return
       }
@@ -349,11 +349,25 @@ function createHostSession() {
 
     // ─── Control Data Channel ──────────────────────────────
     controlChannel = peerConnection.createDataChannel('control', { ordered: true })
-    controlChannel.onopen = () => {
+    controlChannel.onopen = async () => {
+      let agentInfo = null
+      try {
+        const res = await requestAgent({ type: 'get_info' }, 2000)
+        if (res && !res.error) {
+          agentInfo = res
+        }
+      } catch (_) {}
+
       sendControl({
         type: 'system_info',
-        hostname: device.deviceName.value || hostLabel(),
-        platform: hostLabel(),
+        device_id: sessionCode.value,
+        hostname: agentInfo?.hostname || device.deviceName.value || hostLabel(),
+        username: agentInfo?.username || '',
+        primary_ip: agentInfo?.primary_ip || '',
+        lan_ips: agentInfo?.lan_ips || [],
+        os_name: agentInfo?.os_name || hostLabel(),
+        platform: agentInfo?.platform || hostLabel(),
+        ssh_running: !!agentInfo?.ssh_running,
         monitors: [{ index: 1, name: 'Shared screen' }],
         current_monitor: 1,
         quality: 'medium',
@@ -482,7 +496,7 @@ function createHostSession() {
             try {
               const res = await requestAgent({ type: 'list', path: msg.path }, 8000)
               if (res && !res.error) {
-                entries = res.entries || []
+                entries = (res.entries || []).slice(0, 300)
               }
             } catch (_) {}
           }
@@ -659,7 +673,7 @@ function createHostSession() {
   async function handleControlMessage(rawMessage) {
     let message
     try {
-      message = JSON.parse(rawMessage)
+      message = typeof rawMessage === 'string' ? JSON.parse(rawMessage) : rawMessage
     } catch (_error) {
       return
     }
@@ -672,7 +686,6 @@ function createHostSession() {
         try {
           signaling.send({ type: 'control_granted' })
           signaling.send({ type: 'agent_control', data: { type: 'take_control' } })
-          callAgent('control', 'POST', { type: 'take_control' })
         } catch (_) {}
         statusText.value = 'Remote user has taken control.'
         return
@@ -685,7 +698,6 @@ function createHostSession() {
         try {
           signaling.send({ type: 'control_released' })
           signaling.send({ type: 'agent_control', data: { type: 'release_control' } })
-          callAgent('control', 'POST', { type: 'release_control' })
         } catch (_) {}
         statusText.value = 'Remote user released control. View only mode.'
         return
@@ -708,8 +720,11 @@ function createHostSession() {
       }
 
       if (message.type === 'clipboard') {
-        if (message.text && navigator.clipboard && window.isSecureContext) {
-          navigator.clipboard.writeText(message.text).catch(() => {})
+        if (message.text) {
+          if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(message.text).catch(() => {})
+          }
+          signaling.send({ type: 'agent_control', data: { type: 'clipboard', text: message.text } })
         }
         return
       }
@@ -717,17 +732,12 @@ function createHostSession() {
       // 2. Interactive Input Events (gated by controlEnabled)
       if (!controlEnabled.value) return
 
-      if (message.type === 'mousemove') {
-        if (isNativeApp()) {
+      // In native desktop Tauri host, inject inputs into OS
+      if (isNativeApp()) {
+        if (message.type === 'mousemove') {
           await invoke('move_mouse', { x: message.x, y: message.y })
-        } else {
-          signaling.send({ type: 'agent_control', data: message })
-          callAgent('mouse', 'POST', message)
-        }
-      } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick' || message.type === 'contextmenu') {
-        const btn = message.type === 'contextmenu' ? 2 : (message.button ?? 0)
-        const payload = { ...message, button: btn }
-        if (isNativeApp()) {
+        } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick' || message.type === 'contextmenu') {
+          const btn = message.type === 'contextmenu' ? 2 : (message.button ?? 0)
           await invoke('move_mouse', { x: message.x, y: message.y })
           if (message.type === 'mousedown') {
             await invoke('mouse_event', { button: btn, isDown: true })
@@ -745,30 +755,18 @@ function createHostSession() {
             await invoke('mouse_event', { button: btn, isDown: true })
             await invoke('mouse_event', { button: btn, isDown: false })
           }
-        } else {
-          signaling.send({ type: 'agent_control', data: payload })
-          callAgent('mouse', 'POST', payload)
-        }
-      } else if (message.type === 'scroll') {
-        if (isNativeApp()) {
+        } else if (message.type === 'scroll') {
           await invoke('scroll_mouse', {
             deltaX: scrollSteps(message.deltaX),
             deltaY: scrollSteps(message.deltaY),
           })
-        } else {
-          signaling.send({ type: 'agent_control', data: message })
-          callAgent('mouse', 'POST', message)
-        }
-      } else if (message.type === 'keydown' || message.type === 'keyup') {
-        if (isNativeApp()) {
+        } else if (message.type === 'keydown' || message.type === 'keyup') {
           await invoke('key_event', { key: message.key, isDown: message.type === 'keydown' })
           if (message.type === 'keydown') pressedKeys.add(message.key)
           else pressedKeys.delete(message.key)
-        } else {
-          signaling.send({ type: 'agent_control', data: message })
-          callAgent('key', 'POST', message)
         }
       }
+      // Note: In browser mode, client sends directly to signaling server -> Redis -> companion agent
     } catch (_invokeError) {
       error.value = 'Remote input needs native app permissions.'
     }

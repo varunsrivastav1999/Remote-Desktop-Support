@@ -421,9 +421,16 @@ export function useWebRTC(signaling) {
     }
 
     // 2. Dual-transport fallback via Signaling WebSocket
-    // Always also send session management commands via signaling to reach companion agents
-    const isSessionCtrl = ['take_control', 'release_control', 'get_monitors'].includes(event.type)
-    if (!sent || isSessionCtrl) {
+    // For input events (mouse, key, scroll) and control handshakes (take_control, release_control, clipboard),
+    // ALWAYS dispatch via signaling WebSocket so the native companion agent running on the remote
+    // machine receives them directly through Redis pub/sub.
+    const isDirectAgentEvent = [
+      'take_control', 'release_control', 'get_monitors', 'clipboard',
+      'mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'scroll',
+      'keydown', 'keyup'
+    ].includes(event.type)
+
+    if (isDirectAgentEvent || !sent) {
       try {
         if (signaling && (signaling.isConnected?.value || signaling.send)) {
           signaling.send({ type: 'agent_control', data: event })

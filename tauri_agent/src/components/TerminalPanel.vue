@@ -142,27 +142,57 @@ let sshSocket = null
 
 // Fetch remote machine metadata whenever device ID changes or panel opens
 async function fetchRemoteMetadata() {
+  // 1. Primary source: Direct WebRTC system_info from remote host
+  const direct = props.webrtc?.hostInfo?.value
+  if (direct) {
+    if (direct.username) remoteInfo.username = direct.username
+    if (direct.hostname) remoteInfo.hostname = direct.hostname
+    if (direct.os_name) remoteInfo.os_name = direct.os_name
+    const ip = direct.primary_ip || (Array.isArray(direct.lan_ips) ? direct.lan_ips[0] : '')
+    if (ip) remoteInfo.primary_ip = ip
+    if (direct.ssh_running !== undefined) remoteInfo.ssh_running = !!direct.ssh_running
+
+    if (remoteInfo.primary_ip) sshForm.host = remoteInfo.primary_ip
+    if (remoteInfo.username) sshForm.username = remoteInfo.username
+  }
+
+  // 2. Secondary source: Backend device system_info registry
   if (!props.remoteDeviceId) return
   try {
     const res = await fetch(apiUrl(`/api/v1/devices/${props.remoteDeviceId}/system_info`))
     if (res.ok) {
       const d = await res.json()
       const info = d.info || {}
-      remoteInfo.username = info.username || ''
-      remoteInfo.hostname = info.hostname || ''
-      remoteInfo.os_name = info.os_name || ''
-      remoteInfo.primary_ip = info.primary_ip || (Array.isArray(info.lan_ips) ? info.lan_ips[0] : '')
-      remoteInfo.ssh_running = !!info.ssh_running
+      if (info.username) remoteInfo.username = info.username
+      if (info.hostname) remoteInfo.hostname = info.hostname
+      if (info.os_name) remoteInfo.os_name = info.os_name
+      const ip = info.primary_ip || (Array.isArray(info.lan_ips) ? info.lan_ips[0] : '')
+      if (ip) remoteInfo.primary_ip = ip
+      if (info.ssh_running !== undefined) remoteInfo.ssh_running = !!info.ssh_running
 
-      if (!sshForm.host && remoteInfo.primary_ip) {
+      if (remoteInfo.primary_ip && !sshForm.host) {
         sshForm.host = remoteInfo.primary_ip
       }
-      if (!sshForm.username && remoteInfo.username) {
+      if (remoteInfo.username && !sshForm.username) {
         sshForm.username = remoteInfo.username
       }
     }
   } catch (_) {}
 }
+
+watch(() => props.webrtc?.hostInfo?.value, (info) => {
+  if (info) {
+    if (info.username) remoteInfo.username = info.username
+    if (info.hostname) remoteInfo.hostname = info.hostname
+    if (info.os_name) remoteInfo.os_name = info.os_name
+    const ip = info.primary_ip || (Array.isArray(info.lan_ips) ? info.lan_ips[0] : '')
+    if (ip) remoteInfo.primary_ip = ip
+    if (info.ssh_running !== undefined) remoteInfo.ssh_running = !!info.ssh_running
+
+    if (remoteInfo.primary_ip) sshForm.host = remoteInfo.primary_ip
+    if (remoteInfo.username) sshForm.username = remoteInfo.username
+  }
+}, { deep: true, immediate: true })
 
 watch(() => props.visible, async (isVisible) => {
   if (isVisible) {

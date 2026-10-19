@@ -70,11 +70,13 @@ export function useFileTransfer(fileChannel) {
       send(dc, { type: 'get_home' })
       if (homeTimeout) clearTimeout(homeTimeout)
       homeTimeout = setTimeout(() => {
-        if (isLoading.value && !remotePath.value) {
+        if (isLoading.value) {
           isLoading.value = false
-          errorMessage.value = 'Remote filesystem connection timed out. Ensure remote companion agent or host app is active.'
+          if (!remotePath.value) {
+            errorMessage.value = 'Remote filesystem connection timed out. Ensure remote companion agent is active.'
+          }
         }
-      }, 4500)
+      }, 5000)
     } else {
       dc.onopen = () => {
         isLoading.value = true
@@ -82,15 +84,20 @@ export function useFileTransfer(fileChannel) {
         send(dc, { type: 'get_home' })
         if (homeTimeout) clearTimeout(homeTimeout)
         homeTimeout = setTimeout(() => {
-          if (isLoading.value && !remotePath.value) {
+          if (isLoading.value) {
             isLoading.value = false
-            errorMessage.value = 'Remote filesystem connection timed out.'
+            if (!remotePath.value) {
+              errorMessage.value = 'Remote filesystem connection timed out.'
+            }
           }
-        }, 4500)
+        }, 5000)
       }
       dc.onerror = () => {
         isLoading.value = false
         errorMessage.value = 'DataChannel error during file transfer.'
+      }
+      dc.onclose = () => {
+        isLoading.value = false
       }
     }
   }

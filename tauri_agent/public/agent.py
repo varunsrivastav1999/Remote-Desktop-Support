@@ -100,6 +100,7 @@ KEY_MAP = {}
 if HAS_PYNPUT:
     KEY_MAP = {
         "Enter": Key.enter,
+        "Return": Key.enter,
         "Backspace": Key.backspace,
         "Tab": Key.tab,
         "Escape": Key.esc,
@@ -110,9 +111,19 @@ if HAS_PYNPUT:
         "ArrowLeft": Key.left,
         "ArrowRight": Key.right,
         "Shift": Key.shift,
+        "ShiftLeft": getattr(Key, "shift_l", Key.shift),
+        "ShiftRight": getattr(Key, "shift_r", Key.shift),
         "Control": Key.ctrl,
+        "ControlLeft": getattr(Key, "ctrl_l", Key.ctrl),
+        "ControlRight": getattr(Key, "ctrl_r", Key.ctrl),
         "Alt": Key.alt,
+        "AltLeft": getattr(Key, "alt_l", Key.alt),
+        "AltRight": getattr(Key, "alt_r", Key.alt),
         "Meta": Key.cmd,
+        "MetaLeft": Key.cmd,
+        "MetaRight": Key.cmd,
+        "Cmd": Key.cmd,
+        "Windows": Key.cmd,
         "Delete": Key.delete,
         "Home": Key.home,
         "End": Key.end,
@@ -179,8 +190,8 @@ def execute_mouse(data):
             elif mtype == "scroll":
                 delta_x = int(data.get("deltaX", 0))
                 delta_y = int(data.get("deltaY", 0))
-                steps_y = -1 if delta_y > 0 else (1 if delta_y < 0 else 0)
-                steps_x = -1 if delta_x > 0 else (1 if delta_x < 0 else 0)
+                steps_y = -max(1, min(6, abs(int(delta_y / 30)))) if delta_y > 0 else (max(1, min(6, abs(int(delta_y / 30)))) if delta_y < 0 else 0)
+                steps_x = -max(1, min(6, abs(int(delta_x / 30)))) if delta_x > 0 else (max(1, min(6, abs(int(delta_x / 30)))) if delta_x < 0 else 0)
                 mouse.scroll(steps_x, steps_y)
             return {"status": "ok"}
         except Exception as e:
@@ -262,6 +273,25 @@ def execute_key(data):
             return {"status": "error", "message": str(e)}
 
     return {"status": "error", "message": "No key driver available"}
+
+
+def execute_clipboard(text):
+    """Inject clipboard content directly into the remote OS clipboard."""
+    if not text:
+        return {"status": "ok"}
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False)
+        elif sys.platform == "win32":
+            subprocess.run(["clip"], input=text.encode("utf-8"), check=False)
+        else:
+            if shutil.which("xclip"):
+                subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode("utf-8"), check=False)
+            elif shutil.which("wl-copy"):
+                subprocess.run(["wl-copy"], input=text.encode("utf-8"), check=False)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 def release_all_inputs():
@@ -596,6 +626,13 @@ async def run_websocket_client(server_url, device_id):
                 async for message in ws:
                     try:
                         data = json.loads(message)
+                        # Unwrap payload if nested inside 'data'
+                        if "data" in data and isinstance(data["data"], dict) and "type" in data["data"]:
+                            inner = data["data"]
+                            if "req_id" in data and "req_id" not in inner:
+                                inner["req_id"] = data["req_id"]
+                            data = inner
+
                         mtype = data.get("type")
                         req_id = data.get("req_id")
 
@@ -610,6 +647,10 @@ async def run_websocket_client(server_url, device_id):
                             execute_mouse(data)
                         elif mtype in ("keydown", "keyup"):
                             execute_key(data)
+                        elif mtype == "clipboard":
+                            text = data.get("text", "")
+                            if text:
+                                execute_clipboard(text)
                         elif mtype == "terminal":
                             result = execute_terminal(data)
                             await ws.send(json.dumps({"type": "reply", "reply_to": "terminal", "req_id": req_id, **result}))
