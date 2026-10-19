@@ -13,6 +13,7 @@ from app.routers import (
     signaling_router,
     terminal_router,
     agent_router,
+    ssh_router,
 )
 
 logging.basicConfig(
@@ -70,6 +71,7 @@ app.include_router(sessions_router)
 app.include_router(signaling_router)
 app.include_router(terminal_router)
 app.include_router(agent_router)
+app.include_router(ssh_router)
 
 
 @app.get("/agent.py")

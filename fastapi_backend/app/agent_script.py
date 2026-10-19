@@ -236,17 +236,23 @@ def execute_key(data):
 
     elif HAS_XDOTOOL:
         try:
-            x_key = key_str.lower()
             if key_str == "Enter": x_key = "Return"
             elif key_str == "Escape": x_key = "Escape"
             elif key_str == "Backspace": x_key = "BackSpace"
             elif key_str == "Control": x_key = "Control_L"
             elif key_str == "Shift": x_key = "Shift_L"
             elif key_str == "Alt": x_key = "Alt_L"
-            elif key_str == "ArrowUp": x_key = "Up"
-            elif key_str == "ArrowDown": x_key = "Down"
-            elif key_str == "ArrowLeft": x_key = "Left"
-            elif key_str == "ArrowRight": x_key = "Right"
+            elif key_str in ("Meta", "Super", "Windows"): x_key = "Super_L"
+            elif key_str == "Tab": x_key = "Tab"
+            elif key_str == "Delete": x_key = "Delete"
+            elif key_str == "Home": x_key = "Home"
+            elif key_str == "End": x_key = "End"
+            elif key_str == "PageUp": x_key = "Page_Up"
+            elif key_str == "PageDown": x_key = "Page_Down"
+            elif key_str in (" ", "Space"): x_key = "space"
+            elif key_str.startswith("F") and key_str[1:].isdigit(): x_key = key_str
+            else: x_key = key_str.lower()
+
             if ktype == "keydown":
                 run_xdotool("keydown", x_key)
             elif ktype == "keyup":
@@ -258,11 +264,32 @@ def execute_key(data):
     return {"status": "error", "message": "No key driver available"}
 
 
+current_terminal_cwd = os.path.expanduser("~")
+
 def execute_terminal(data):
+    global current_terminal_cwd
     cmd = data.get("command", "").strip()
-    cwd = data.get("cwd") or os.path.expanduser("~")
+    cwd = data.get("cwd") or current_terminal_cwd
+    if not os.path.isdir(cwd):
+        cwd = os.path.expanduser("~")
+    current_terminal_cwd = cwd
+
     if not cmd:
-        return {"stdout": "", "stderr": "", "exit_code": 0}
+        return {"stdout": "", "stderr": "", "exit_code": 0, "cwd": current_terminal_cwd}
+
+    # Built-in cd directory changer
+    if cmd == "cd" or cmd == "cd ~":
+        current_terminal_cwd = os.path.expanduser("~")
+        return {"stdout": "", "stderr": "", "exit_code": 0, "cwd": current_terminal_cwd}
+    elif cmd.startswith("cd "):
+        target = cmd[3:].strip().strip('"').strip("'")
+        target_path = os.path.expanduser(target) if target.startswith("~") else os.path.join(current_terminal_cwd, target)
+        target_path = os.path.abspath(target_path)
+        if os.path.isdir(target_path):
+            current_terminal_cwd = target_path
+            return {"stdout": "", "stderr": "", "exit_code": 0, "cwd": current_terminal_cwd}
+        else:
+            return {"stdout": "", "stderr": f"cd: {target}: No such file or directory\n", "exit_code": 1, "cwd": current_terminal_cwd}
 
     try:
         if sys.platform == "win32":
@@ -276,17 +303,18 @@ def execute_terminal(data):
             capture_output=True,
             text=True,
             timeout=15,
-            cwd=cwd,
+            cwd=current_terminal_cwd,
         )
         return {
             "stdout": proc.stdout,
             "stderr": proc.stderr,
             "exit_code": proc.returncode,
+            "cwd": current_terminal_cwd,
         }
     except subprocess.TimeoutExpired:
-        return {"stdout": "", "stderr": "Command timed out after 15 seconds\n", "exit_code": 124}
+        return {"stdout": "", "stderr": "Command timed out after 15 seconds\n", "exit_code": 124, "cwd": current_terminal_cwd}
     except Exception as e:
-        return {"stdout": "", "stderr": f"Execution error: {e}\n", "exit_code": 1}
+        return {"stdout": "", "stderr": f"Execution error: {e}\n", "exit_code": 1, "cwd": current_terminal_cwd}
 
 
 def execute_fs_home(data=None):
@@ -468,6 +496,45 @@ def start_http_server():
 # Outbound WebSocket Agent (Connects to Server for Device ID)
 # ═════════════════════════════════════════════════════════════
 
+def get_system_metadata(device_id):
+    import getpass, socket, platform
+    lan_ips = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ips.append(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    if not lan_ips:
+        lan_ips.append("127.0.0.1")
+
+    ssh_running = False
+    try:
+        test_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_s.settimeout(0.5)
+        res = test_s.connect_ex(("127.0.0.1", 22))
+        ssh_running = (res == 0)
+        test_s.close()
+    except Exception:
+        pass
+
+    return {
+        "type": "agent_info",
+        "device_id": device_id,
+        "username": getpass.getuser(),
+        "hostname": socket.gethostname(),
+        "os_name": platform.system(),
+        "os_version": platform.release(),
+        "platform": sys.platform,
+        "lan_ips": lan_ips,
+        "primary_ip": lan_ips[0],
+        "default_cwd": os.path.expanduser("~"),
+        "ssh_running": ssh_running,
+        "has_input": HAS_PYNPUT or HAS_XDOTOOL,
+    }
+
+
 async def run_websocket_client(server_url, device_id):
     import websockets
 
@@ -481,10 +548,14 @@ async def run_websocket_client(server_url, device_id):
     while True:
         try:
             async with websockets.connect(target, ping_interval=20, ping_timeout=15) as ws:
+                meta = get_system_metadata(device_id)
+                await ws.send(json.dumps(meta))
+
                 print("=" * 65)
                 print(f" 🟢 NATIVE AGENT CONNECTED AND ACTIVE FOR DEVICE {device_id}!")
-                print(" • Full OS mouse, keyboard, and terminal control enabled.")
-                print(" • Screen interactions from controller will execute directly.")
+                print(f" • Remote System: {meta['username']}@{meta['hostname']} ({meta['os_name']})")
+                print(f" • Detected IP: {meta['primary_ip']} | SSH: {'Listening' if meta['ssh_running'] else 'Not detected'}")
+                print(" • Full OS mouse, keyboard, terminal, and file transfer enabled.")
                 print("=" * 65)
                 reconnect_delay = 1
 
@@ -492,6 +563,7 @@ async def run_websocket_client(server_url, device_id):
                     try:
                         data = json.loads(message)
                         mtype = data.get("type")
+                        req_id = data.get("req_id")
 
                         if mtype in ("mousemove", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "scroll"):
                             execute_mouse(data)
@@ -499,25 +571,28 @@ async def run_websocket_client(server_url, device_id):
                             execute_key(data)
                         elif mtype == "terminal":
                             result = execute_terminal(data)
-                            await ws.send(json.dumps({"type": "reply", "reply_to": "terminal", **result}))
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "terminal", "req_id": req_id, **result}))
                         elif mtype == "get_home":
                             result = execute_fs_home(data)
-                            await ws.send(json.dumps({"type": "reply", "reply_to": "home", **result}))
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "home", "req_id": req_id, **result}))
                         elif mtype == "list":
                             result = execute_fs_list(data)
-                            await ws.send(json.dumps({"type": "reply", "reply_to": "listing", **result}))
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "listing", "req_id": req_id, **result}))
                         elif mtype == "download":
                             result = execute_fs_read_chunk(data)
-                            await ws.send(json.dumps({"type": "reply", "reply_to": "download", **result}))
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "download", "req_id": req_id, **result}))
                         elif mtype == "upload_chunk":
                             result = execute_fs_write_chunk(data)
-                            await ws.send(json.dumps({"type": "reply", "reply_to": "upload_chunk", **result}))
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "upload_chunk", "req_id": req_id, **result}))
                         elif mtype == "delete":
                             result = execute_fs_delete(data)
-                            await ws.send(json.dumps({"type": "reply", "reply_to": "delete", **result}))
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "delete", "req_id": req_id, **result}))
                         elif mtype == "mkdir":
                             result = execute_fs_mkdir(data)
-                            await ws.send(json.dumps({"type": "reply", "reply_to": "mkdir", **result}))
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "mkdir", "req_id": req_id, **result}))
+                        elif mtype == "get_info":
+                            info = get_system_metadata(device_id)
+                            await ws.send(json.dumps({"type": "reply", "reply_to": "info", "req_id": req_id, **info}))
                     except Exception as parse_err:
                         print(f"[Agent Error] {parse_err}")
 

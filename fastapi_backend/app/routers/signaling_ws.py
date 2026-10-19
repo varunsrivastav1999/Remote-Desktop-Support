@@ -138,6 +138,19 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
             if msg_type in ("ping", "heartbeat"):
                 await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
                 await websocket.send_json({"type": "pong"})
+            elif msg_type == "agent_info":
+                await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
+                flat_info = {}
+                for k, v in data.items():
+                    flat_info[k] = json.dumps(v) if isinstance(v, (list, dict, bool)) else str(v)
+                await redis_client.hset(f"device:{norm_device_id}:agent_info", mapping=flat_info)
+                session_channel = f"channel:session:{norm_device_id}"
+                await redis_client.publish(session_channel, json.dumps({
+                    "connection_id": "agent",
+                    "sender_role": "agent",
+                    "target_role": None,
+                    "data": {"type": "agent_info", **data},
+                }))
             elif msg_type == "reply":
                 session_channel = f"channel:session:{norm_device_id}"
                 await redis_client.publish(session_channel, json.dumps({

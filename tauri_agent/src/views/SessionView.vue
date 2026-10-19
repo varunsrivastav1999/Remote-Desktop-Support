@@ -52,6 +52,7 @@
       <TerminalPanel
         :visible="showTerminal"
         :webrtc="webrtc"
+        :remote-device-id="props.code"
         @close="showTerminal = false"
       />
 

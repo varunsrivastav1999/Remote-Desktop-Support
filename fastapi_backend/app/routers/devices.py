@@ -221,3 +221,23 @@ async def list_devices(
             )
         )
     return output
+
+
+@router.get("/{device_id}/system_info")
+async def get_device_system_info(device_id: str, request: Request):
+    norm_id = normalize_device_id(device_id)
+    redis_client = get_redis(request)
+    raw_info = await redis_client.hgetall(f"device:{norm_id}:agent_info")
+    agent_online = await redis_client.exists(f"device:{norm_id}:agent_online")
+    info = {}
+    for k, v in (raw_info or {}).items():
+        try:
+            info[k] = json.loads(v)
+        except Exception:
+            info[k] = v
+
+    return {
+        "device_id": norm_id,
+        "agent_online": bool(agent_online),
+        "info": info,
+    }

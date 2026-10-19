@@ -89,6 +89,20 @@ function createHostSession() {
     }
   }
 
+  const pendingAgentRequests = new Map()
+
+  function requestAgent(actionData, timeoutMs = 15000) {
+    const req_id = 'req_' + Math.random().toString(36).slice(2, 10)
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingAgentRequests.delete(req_id)
+        resolve({ error: 'Remote host companion agent timed out or unreachable.' })
+      }, timeoutMs)
+      pendingAgentRequests.set(req_id, { resolve, timer })
+      signaling.send({ type: 'agent_control', data: { ...actionData, req_id } })
+    })
+  }
+
   async function callAgent(endpoint, method = 'POST', data = null) {
     const cleanPath = endpoint.replace(/^\//, '')
     const body = data ? JSON.stringify(data) : undefined
@@ -207,6 +221,17 @@ function createHostSession() {
 
   async function handleSignalingMessage(message) {
     try {
+      if (message.type === 'reply' || message.reply_to) {
+        const reqId = message.req_id
+        if (reqId && pendingAgentRequests.has(reqId)) {
+          const req = pendingAgentRequests.get(reqId)
+          pendingAgentRequests.delete(reqId)
+          clearTimeout(req.timer)
+          req.resolve(message)
+          return
+        }
+      }
+
       if (message.type === 'registered' && message.role === 'host') {
         error.value = ''
         state.value = screenShare.localStream.value ? 'waiting' : 'online'
@@ -369,39 +394,28 @@ function createHostSession() {
         }
 
         let executed = false
-        // 1. Try local companion agent first (executes on host OS)
+        // 1. Try local companion agent via persistent signaling WebSocket
         try {
-          const localRes = await callAgent('terminal', 'POST', { command: cmd })
-          if (localRes && localRes.ok) {
-            const d = await localRes.json()
-            const out = (d.stdout || '') + (d.stderr || '')
+          const res = await requestAgent({ type: 'terminal', command: cmd }, 12000)
+          if (res && !res.error) {
+            const out = (res.stdout || '') + (res.stderr || '')
             const formatted = out.replace(/\r?\n/g, '\r\n')
-            terminalChannel.send(formatted ? (formatted.endsWith('\r\n') ? formatted : formatted + '\r\n') + '$ ' : '$ ')
+            const promptSuffix = res.cwd ? `\x1b[1;34m${res.cwd}\x1b[0m $ ` : '$ '
+            terminalChannel.send(formatted ? (formatted.endsWith('\r\n') ? formatted : formatted + '\r\n') + promptSuffix : promptSuffix)
             executed = true
           }
         } catch (_) {}
 
-        // 2. Fallback to backend terminal runner
-        if (!executed) {
+        // 2. If native desktop host
+        if (!executed && isNativeApp()) {
           try {
-            const apiRes = await fetch(apiUrl('/api/v1/terminal/exec', settings), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ command: cmd }),
-              signal: AbortSignal.timeout(15000),
-            })
-            if (apiRes.ok) {
-              const d = await apiRes.json()
-              const out = (d.stdout || '') + (d.stderr || '')
-              const formatted = out.replace(/\r?\n/g, '\r\n')
-              terminalChannel.send(formatted ? (formatted.endsWith('\r\n') ? formatted : formatted + '\r\n') + '$ ' : '$ ')
-              executed = true
-            }
+            await invoke('write_terminal', { data: cmd + '\n' })
+            executed = true
           } catch (_) {}
         }
 
         if (!executed) {
-          terminalChannel.send('Failed to execute command: local agent and backend unreachable.\r\n$ ')
+          terminalChannel.send('\r\n\x1b[1;33m[Host Agent Offline] Start the companion agent on the remote host to run terminal commands on this system.\x1b[0m\r\n$ ')
         }
       } else if (char === '\x7f' || char === '\b') {
         // Backspace
@@ -438,12 +452,11 @@ function createHostSession() {
             home = await invoke('fs_get_home').catch(() => '/')
           } else {
             try {
-              const res = await callAgent('fs/home', 'GET')
-              if (res && res.ok) {
-                const data = await res.json()
-                home = data.path || home
-                sep = data.separator || sep
-                platform = data.platform || platform
+              const res = await requestAgent({ type: 'get_home' }, 5000)
+              if (res && !res.error) {
+                home = res.path || home
+                sep = res.separator || sep
+                platform = res.platform || platform
               }
             } catch (_) {}
           }
@@ -454,10 +467,9 @@ function createHostSession() {
             entries = await invoke('fs_list_dir', { dirPath: msg.path }).catch(() => [])
           } else {
             try {
-              const res = await callAgent('fs/list', 'POST', { path: msg.path })
-              if (res && res.ok) {
-                const data = await res.json()
-                entries = data.entries || []
+              const res = await requestAgent({ type: 'list', path: msg.path }, 8000)
+              if (res && !res.error) {
+                entries = res.entries || []
               }
             } catch (_) {}
           }
@@ -470,9 +482,8 @@ function createHostSession() {
             let fileName = msg.path.split('/').pop().split('\\').pop()
             let eof = false
 
-            const res = await callAgent('fs/read_chunk', 'POST', { path: msg.path, offset: 0, size: chunkSize })
-            if (res && res.ok) {
-              const initial = await res.json()
+            const initial = await requestAgent({ type: 'download', path: msg.path, offset: 0, size: chunkSize }, 10000)
+            if (initial && !initial.error) {
               fileName = initial.name || fileName
               totalSize = initial.total_size || 0
               fileChannel.send(JSON.stringify({
@@ -492,23 +503,21 @@ function createHostSession() {
               eof = initial.eof || (offset >= totalSize)
 
               while (!eof && offset < totalSize) {
-                const nextRes = await callAgent('fs/read_chunk', 'POST', { path: msg.path, offset, size: chunkSize })
-                if (!nextRes || !nextRes.ok) break
-                const chunkData = await nextRes.json()
-                if (!chunkData.data) break
+                const nextRes = await requestAgent({ type: 'download', path: msg.path, offset, size: chunkSize }, 10000)
+                if (!nextRes || nextRes.error || !nextRes.data) break
                 fileChannel.send(JSON.stringify({
                   type: 'download_chunk',
-                  data: chunkData.data,
-                  size: chunkData.size,
+                  data: nextRes.data,
+                  size: nextRes.size,
                 }))
-                offset += chunkData.size
-                eof = chunkData.eof || (offset >= totalSize)
-                await new Promise(r => setTimeout(r, 10))
+                offset += nextRes.size || 0
+                eof = nextRes.eof || (offset >= totalSize)
+                await new Promise(r => setTimeout(r, 5))
               }
 
               fileChannel.send(JSON.stringify({ type: 'download_end' }))
             } else {
-              fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to read file from host' }))
+              fileChannel.send(JSON.stringify({ type: 'error', message: initial?.error || 'Failed to read file from remote host' }))
             }
           } catch (err) {
             fileChannel.send(JSON.stringify({ type: 'error', message: err.message }))
@@ -524,12 +533,23 @@ function createHostSession() {
         } else if (msg.type === 'upload_chunk') {
           if (currentIncomingUpload) {
             try {
-              await callAgent('fs/write_chunk', 'POST', {
-                dest: currentIncomingUpload.dest,
-                name: currentIncomingUpload.name,
-                data: msg.data,
-                offset: msg.offset,
-              })
+              if (isNativeApp()) {
+                await invoke('fs_write_chunk', {
+                  destDir: currentIncomingUpload.dest,
+                  filename: currentIncomingUpload.name,
+                  chunkB64: msg.data,
+                  offset: msg.offset,
+                })
+              } else {
+                await requestAgent({
+                  type: 'upload_chunk',
+                  dest: currentIncomingUpload.dest,
+                  name: currentIncomingUpload.name,
+                  data: msg.data,
+                  offset: msg.offset,
+                  total_size: currentIncomingUpload.size,
+                }, 10000)
+              }
               currentIncomingUpload.received = msg.offset + (msg.data ? Math.round(msg.data.length * 0.75) : 0)
               const pct = currentIncomingUpload.size > 0
                 ? Math.min(100, Math.round((currentIncomingUpload.received / currentIncomingUpload.size) * 100))
@@ -539,28 +559,39 @@ function createHostSession() {
                 received: currentIncomingUpload.received,
                 progress: pct,
               }))
-            } catch (_) {}
+            } catch (uploadErr) {
+              fileChannel.send(JSON.stringify({ type: 'error', message: uploadErr.message }))
+            }
           }
         } else if (msg.type === 'upload_end') {
           currentIncomingUpload = null
           fileChannel.send(JSON.stringify({ type: 'upload_complete' }))
         } else if (msg.type === 'delete') {
           try {
-            await callAgent('fs/delete', 'POST', { path: msg.path })
+            if (isNativeApp()) {
+              await invoke('fs_delete', { targetPath: msg.path })
+            } else {
+              await requestAgent({ type: 'delete', path: msg.path }, 8000)
+            }
             fileChannel.send(JSON.stringify({ type: 'delete_ok' }))
           } catch (err) {
-            fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to delete file' }))
+            fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to delete file on remote host' }))
           }
         } else if (msg.type === 'mkdir') {
           try {
-            await callAgent('fs/mkdir', 'POST', { path: msg.path })
+            if (isNativeApp()) {
+              await invoke('fs_mkdir', { targetPath: msg.path })
+            } else {
+              await requestAgent({ type: 'mkdir', path: msg.path }, 8000)
+            }
             fileChannel.send(JSON.stringify({ type: 'mkdir_ok' }))
           } catch (err) {
-            fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to create directory' }))
+            fileChannel.send(JSON.stringify({ type: 'error', message: 'Failed to create directory on remote host' }))
           }
         }
       } catch (e) {
         console.error('File channel error:', e)
+        fileChannel.send(JSON.stringify({ type: 'error', message: 'File channel error on remote host' }))
       }
     }
 

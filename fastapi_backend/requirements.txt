@@ -10,3 +10,4 @@ pydantic>=2.5.0
 bcrypt>=4.1.2
 python-multipart>=0.0.6
 httpx>=0.26.0
+paramiko>=3.4.0
