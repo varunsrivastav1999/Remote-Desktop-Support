@@ -8,6 +8,7 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
+@router.head("/health")
 async def health_check(request: Request):
     redis_ok = False
     db_ok = False

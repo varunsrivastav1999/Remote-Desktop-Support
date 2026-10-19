@@ -120,19 +120,25 @@ Expected output:
 Remote Desktop Support supports two host modes:
 
 ### Mode A: Browser Host + Native Companion Agent (Recommended for Web Users)
-When sharing a screen through a web browser (Google Chrome, Microsoft Edge, Mozilla Firefox), run the lightweight companion daemon on the host machine to grant OS mouse, keyboard, and filesystem control:
+When sharing a screen through a web browser (Google Chrome, Microsoft Edge, Mozilla Firefox), run the lightweight companion daemon on the host computer to enable native OS mouse clicks, drag-and-drop, keyboard input, terminal commands, and file browsing.
+
+The web app displays a **1-Click Copy Command** directly on the **Share This Desk** screen with your Device ID pre-filled:
 
 ```bash
-# Start the companion agent in the background
-nohup python3 scripts/local_agent.py > scripts/local_agent.log 2>&1 &
+# 1-Click Universal Launch Command (Linux, macOS, Windows):
+curl -sSL https://webmaster-meal-classroom-colony.trycloudflare.com/agent.py | python3 - --device <YOUR_DEVICE_ID>
+
+# Or if you already have the repository cloned:
+python3 scripts/local_agent.py --device <YOUR_DEVICE_ID>
 ```
 
-- **macOS Permissions:** Grant *Screen Recording* and *Accessibility* permissions to your Terminal / Python process in **System Settings → Privacy & Security → Accessibility**.
-- **Windows / Linux:** Works out of the box using `pynput` with zero configuration required.
-- **HTTPS Mixed-Content Protection:** When accessed via Cloudflare Tunnel (`https://...`), requests to the companion agent are automatically routed through the backend proxy (`/api/v1/agent/*`), ensuring complete browser security compliance.
+- **Outbound WebSocket Tunneling:** The companion agent connects via persistent outbound WebSocket directly to the signaling server (`wss://.../ws/agent/{device_id}`). This bypasses all browser Mixed Content and Private Network Access (PNA) restrictions, working seamlessly across firewalls and NAT.
+- **Linux (Ubuntu / Debian / Fedora / Arch):** Automatically detects and uses `pynput` or native `xdotool` (`sudo apt-get install -y xdotool`). Supports single clicks, right clicks, double clicks, dragging, scrolling, and keyboard shortcuts.
+- **macOS:** Grant *Screen Recording* and *Accessibility* permissions to your Terminal / Python process in **System Settings → Privacy & Security → Accessibility**.
+- **Windows:** Supports all mouse and keyboard actions out of the box via `pynput` and `user32.dll`.
 
 ### Mode B: Native Tauri Desktop Application
-For an all-in-one native binary (no Python required):
+For an all-in-one native binary (with built-in Rust engine, zero Python required):
 
 ```bash
 cd tauri_agent

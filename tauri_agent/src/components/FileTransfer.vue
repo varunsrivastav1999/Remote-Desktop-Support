@@ -98,7 +98,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, toRef } from 'vue'
 import { useFileTransfer } from '../composables/useFileTransfer.js'
 
 const props = defineProps({
@@ -108,18 +108,24 @@ const props = defineProps({
 
 defineEmits(['close'])
 
-const ft = useFileTransfer(ref(null))
+const fileChannelRef = toRef(props, 'fileChannel')
+const ft = useFileTransfer(fileChannelRef)
 const dragOver = ref(false)
 const fileInput = ref(null)
 
-// Setup channel when it becomes available
+// Setup channel when it becomes available or changes
 watch(() => props.fileChannel, (dc) => {
-  if (dc && dc.readyState === 'open') {
+  if (dc) {
     ft.setupChannel(dc)
-  } else if (dc) {
-    dc.onopen = () => ft.setupChannel(dc)
   }
 }, { immediate: true })
+
+// Refresh listing when panel is opened
+watch(() => props.visible, (visible) => {
+  if (visible && props.fileChannel) {
+    ft.setupChannel(props.fileChannel)
+  }
+})
 
 function handleFileSelect(event) {
   const files = event.target.files

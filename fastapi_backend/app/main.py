@@ -60,6 +60,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import os
+from fastapi import Response
+
 # Register routers
 app.include_router(health_router)
 app.include_router(devices_router)
@@ -67,3 +70,20 @@ app.include_router(sessions_router)
 app.include_router(signaling_router)
 app.include_router(terminal_router)
 app.include_router(agent_router)
+
+
+@app.get("/agent.py")
+async def get_companion_agent():
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "agent_script.py"),
+        "/app/app/agent_script.py",
+        "/app/agent_script.py",
+        "/workspace/scripts/local_agent.py",
+        os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "local_agent.py"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return Response(content=f.read(), media_type="text/x-python")
+    return Response(content="# Companion agent script not found", status_code=404)
+

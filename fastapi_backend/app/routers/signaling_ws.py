@@ -97,7 +97,69 @@ async def device_notification_endpoint(websocket: WebSocket, device_id: str) -> 
 
 
 # ═════════════════════════════════════════════════════════════
-# 2. WebRTC Session Signaling Channel: /ws/{session_id}
+# 2. Native Companion Agent Channel: /ws/agent/{device_id}
+# ═════════════════════════════════════════════════════════════
+
+@router.websocket("/ws/agent/{device_id}")
+async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None:
+    redis_client: redis.Redis = websocket.app.state.redis
+    norm_device_id = normalize_device_id(device_id)
+
+    await websocket.accept()
+    agent_channel = f"channel:agent:{norm_device_id}"
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(agent_channel)
+    logger.info(f"Native companion agent connected for device: {norm_device_id}")
+
+    # Set agent presence in Redis
+    await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
+    await websocket.send_json({"type": "agent_connected", "device_id": norm_device_id})
+
+    async def forward_to_agent():
+        try:
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                data = json.loads(message["data"])
+                await websocket.send_json(data)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Agent listener exception for {norm_device_id}: {e}")
+
+    task = asyncio.create_task(forward_to_agent())
+
+    try:
+        while True:
+            text = await websocket.receive_text()
+            data = json.loads(text)
+            msg_type = data.get("type")
+
+            if msg_type in ("ping", "heartbeat"):
+                await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
+                await websocket.send_json({"type": "pong"})
+            elif msg_type == "reply":
+                session_channel = f"channel:session:{norm_device_id}"
+                await redis_client.publish(session_channel, json.dumps({
+                    "connection_id": "agent",
+                    "sender_role": "agent",
+                    "target_role": None,
+                    "data": data,
+                }))
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug(f"Agent WS disconnected for {norm_device_id}: {e}")
+    finally:
+        task.cancel()
+        await redis_client.delete(f"device:{norm_device_id}:agent_online")
+        await pubsub.unsubscribe(agent_channel)
+        await pubsub.aclose()
+        logger.info(f"Native companion agent disconnected for device: {norm_device_id}")
+
+
+# ═════════════════════════════════════════════════════════════
+# 3. WebRTC Session Signaling Channel: /ws/{session_id}
 # ═════════════════════════════════════════════════════════════
 
 @router.websocket("/ws/{session_id}")
@@ -333,6 +395,11 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     await redis_client.delete(f"session:{code}:pending_request")
             elif message_type == "ice_restart_request":
                 target_role = "host"
+            elif message_type == "agent_control":
+                agent_channel = f"channel:agent:{code}"
+                ctrl_payload = data.get("data") if "data" in data else data
+                await redis_client.publish(agent_channel, json.dumps(ctrl_payload))
+                continue
             else:
                 await send_error(f"Message type '{message_type}' is not allowed for role '{role}'.")
                 continue

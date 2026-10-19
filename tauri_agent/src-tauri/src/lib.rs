@@ -56,46 +56,56 @@ fn keyboard_key(key: &str) -> Option<Key> {
     }
 }
 
+static ENIGO: OnceLock<Mutex<Enigo>> = OnceLock::new();
+
+fn get_enigo() -> &'static Mutex<Enigo> {
+    ENIGO.get_or_init(|| Mutex::new(Enigo::new()))
+}
+
 #[tauri::command]
 fn move_mouse(x: f64, y: f64) {
-    let mut enigo = Enigo::new();
-    let (width, height) = enigo.main_display_size();
-    let target_x = (x.clamp(0.0, 1.0) * f64::from(width.saturating_sub(1))).round() as i32;
-    let target_y = (y.clamp(0.0, 1.0) * f64::from(height.saturating_sub(1))).round() as i32;
-    enigo.mouse_move_to(target_x, target_y);
+    if let Ok(mut enigo) = get_enigo().lock() {
+        let (width, height) = enigo.main_display_size();
+        let target_x = (x.clamp(0.0, 1.0) * f64::from(width.saturating_sub(1))).round() as i32;
+        let target_y = (y.clamp(0.0, 1.0) * f64::from(height.saturating_sub(1))).round() as i32;
+        enigo.mouse_move_to(target_x, target_y);
+    }
 }
 
 #[tauri::command]
 fn mouse_event(button: i32, is_down: bool) {
     if let Some(button) = mouse_button(button) {
-        let mut enigo = Enigo::new();
-        if is_down {
-            enigo.mouse_down(button);
-        } else {
-            enigo.mouse_up(button);
+        if let Ok(mut enigo) = get_enigo().lock() {
+            if is_down {
+                enigo.mouse_down(button);
+            } else {
+                enigo.mouse_up(button);
+            }
         }
     }
 }
 
 #[tauri::command]
 fn scroll_mouse(delta_x: i32, delta_y: i32) {
-    let mut enigo = Enigo::new();
-    if delta_x != 0 {
-        enigo.mouse_scroll_x(delta_x.clamp(-20, 20));
-    }
-    if delta_y != 0 {
-        enigo.mouse_scroll_y(delta_y.clamp(-20, 20));
+    if let Ok(mut enigo) = get_enigo().lock() {
+        if delta_x != 0 {
+            enigo.mouse_scroll_x(delta_x.clamp(-20, 20));
+        }
+        if delta_y != 0 {
+            enigo.mouse_scroll_y(delta_y.clamp(-20, 20));
+        }
     }
 }
 
 #[tauri::command]
 fn key_event(key: String, is_down: bool) {
     if let Some(key) = keyboard_key(&key) {
-        let mut enigo = Enigo::new();
-        if is_down {
-            enigo.key_down(key);
-        } else {
-            enigo.key_up(key);
+        if let Ok(mut enigo) = get_enigo().lock() {
+            if is_down {
+                enigo.key_down(key);
+            } else {
+                enigo.key_up(key);
+            }
         }
     }
 }

@@ -176,6 +176,23 @@ async def get_device_info(
     )
 
 
+@router.get("/{device_id}/agent_status")
+async def get_device_agent_status(
+    device_id: str,
+    request: Request,
+):
+    """
+    Checks if a native companion agent is actively connected for this device.
+    """
+    norm_id = normalize_device_id(device_id)
+    redis_client = get_redis(request)
+    is_online = await redis_client.exists(f"device:{norm_id}:agent_online")
+    return {
+        "device_id": norm_id,
+        "agent_online": bool(is_online),
+    }
+
+
 @router.get("", response_model=List[DeviceResponse])
 async def list_devices(
     request: Request,

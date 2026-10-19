@@ -36,12 +36,22 @@ export function useFileTransfer(fileChannel) {
   let downloadName = ''
   let downloadSize = 0
   let downloadStartTime = 0
+  let activeChannel = null
+  let listTimeout = null
+
+  function getChannel() {
+    if (activeChannel && activeChannel.readyState === 'open') return activeChannel
+    const ch = (fileChannel && typeof fileChannel === 'object' && 'value' in fileChannel) ? fileChannel.value : fileChannel
+    if (ch && ch.readyState === 'open') return ch
+    return activeChannel || ch
+  }
 
   /**
    * Listen for messages on the file transfer channel.
    */
   function setupChannel(dc) {
     if (!dc) return
+    activeChannel = dc
 
     dc.onmessage = (event) => {
       try {
@@ -52,11 +62,23 @@ export function useFileTransfer(fileChannel) {
       }
     }
 
-    // Request home directory
-    send(dc, { type: 'get_home' })
+    if (dc.readyState === 'open') {
+      isLoading.value = true
+      send(dc, { type: 'get_home' })
+    } else {
+      dc.onopen = () => {
+        isLoading.value = true
+        send(dc, { type: 'get_home' })
+      }
+    }
   }
 
   function handleMessage(data) {
+    if (listTimeout) {
+      clearTimeout(listTimeout)
+      listTimeout = null
+    }
+
     switch (data.type) {
       case 'home':
         remotePath.value = data.path
@@ -165,8 +187,19 @@ export function useFileTransfer(fileChannel) {
 
   function listDirectory(path) {
     isLoading.value = true
-    const dc = fileChannel.value
-    if (dc) send(dc, { type: 'list', path })
+    const dc = getChannel()
+    if (dc && dc.readyState === 'open') {
+      send(dc, { type: 'list', path })
+      if (listTimeout) clearTimeout(listTimeout)
+      listTimeout = setTimeout(() => {
+        if (isLoading.value) {
+          console.warn('[FileTransfer] Directory listing timed out')
+          isLoading.value = false
+        }
+      }, 5000)
+    } else {
+      isLoading.value = false
+    }
   }
 
   function navigateUp() {
@@ -182,15 +215,15 @@ export function useFileTransfer(fileChannel) {
   }
 
   function downloadFile(path) {
-    const dc = fileChannel.value
-    if (dc) {
+    const dc = getChannel()
+    if (dc && dc.readyState === 'open') {
       downloadStartTime = Date.now()
       send(dc, { type: 'download', path })
     }
   }
 
   async function uploadFile(file, destPath) {
-    const dc = fileChannel.value
+    const dc = getChannel()
     if (!dc || dc.readyState !== 'open') return
 
     activeTransfer.name = file.name
@@ -240,13 +273,13 @@ export function useFileTransfer(fileChannel) {
   }
 
   function createDirectory(path) {
-    const dc = fileChannel.value
-    if (dc) send(dc, { type: 'mkdir', path })
+    const dc = getChannel()
+    if (dc && dc.readyState === 'open') send(dc, { type: 'mkdir', path })
   }
 
   function deleteItem(path) {
-    const dc = fileChannel.value
-    if (dc) send(dc, { type: 'delete', path })
+    const dc = getChannel()
+    if (dc && dc.readyState === 'open') send(dc, { type: 'delete', path })
   }
 
   // ─── Helpers ──────────────────────────────────────────────

@@ -31,6 +31,7 @@ function createHostSession() {
   const controlEnabled = ref(false)
   const chatMessages = ref([])
   const unreadCount = ref(0)
+  const hasAgent = ref(isNativeApp())
 
   let settings = {}
   let hostToken = ''
@@ -42,38 +43,72 @@ function createHostSession() {
   let queuedIce = []
   let onlinePromise = null
   let currentIncomingUpload = null
+  let agentPollTimer = null
   const pressedButtons = new Set()
   const pressedKeys = new Set()
 
+  async function checkAgentStatus() {
+    if (isNativeApp()) {
+      hasAgent.value = true
+      return true
+    }
+    // Check direct local companion daemon first
+    try {
+      const local = await fetch('http://127.0.0.1:8765/health', { signal: AbortSignal.timeout(1000) })
+      if (local && local.ok) {
+        hasAgent.value = true
+        return true
+      }
+    } catch (_) {}
+
+    // Check backend agent presence for this device
+    if (sessionCode.value) {
+      try {
+        const res = await fetch(apiUrl(`/api/v1/devices/${sessionCode.value}/agent_status`, settings), { signal: AbortSignal.timeout(2000) })
+        if (res && res.ok) {
+          const d = await res.json()
+          hasAgent.value = Boolean(d.agent_online)
+          return hasAgent.value
+        }
+      } catch (_) {}
+    }
+    hasAgent.value = false
+    return false
+  }
+
+  function startAgentPolling() {
+    stopAgentPolling()
+    checkAgentStatus()
+    agentPollTimer = setInterval(checkAgentStatus, 3000)
+  }
+
+  function stopAgentPolling() {
+    if (agentPollTimer) {
+      clearInterval(agentPollTimer)
+      agentPollTimer = null
+    }
+  }
+
   async function callAgent(endpoint, method = 'POST', data = null) {
-    const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
     const cleanPath = endpoint.replace(/^\//, '')
     const body = data ? JSON.stringify(data) : undefined
     const headers = data ? { 'Content-Type': 'application/json' } : {}
 
-    if (isHttps) {
-      try {
-        const url = apiUrl(`/api/v1/agent/${cleanPath}`, settings)
-        const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(12000) })
-        if (res.ok) return res
-      } catch (e) {
-        console.warn('[HostSession] HTTPS agent proxy error:', e)
-      }
-    }
-
+    // 1. Direct local companion agent (fastest, 1.2s timeout)
     try {
       const directUrl = `http://127.0.0.1:8765/${cleanPath}`
-      const res = await fetch(directUrl, { method, headers, body, signal: AbortSignal.timeout(3000) })
-      if (res.ok) return res
+      const res = await fetch(directUrl, { method, headers, body, signal: AbortSignal.timeout(1200) })
+      if (res && res.ok) return res
     } catch (_) {}
 
+    // 2. HTTPS agent proxy via backend (3s timeout)
     try {
       const url = apiUrl(`/api/v1/agent/${cleanPath}`, settings)
-      const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(12000) })
-      return res
-    } catch (e) {
-      return null
-    }
+      const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(3000) })
+      if (res && res.ok) return res
+    } catch (_) {}
+
+    return null
   }
 
   async function ensureOnline() {
@@ -108,6 +143,7 @@ function createHostSession() {
       sessionCode.value = device.deviceId.value
       hostToken = device.deviceToken.value
       statusText.value = `Device ID ${sessionCode.value} online.`
+      startAgentPolling()
 
       // Set listener for push connection requests
       device.setOnIncomingRequest((req) => {
@@ -579,10 +615,12 @@ function createHostSession() {
         if (isNativeApp()) {
           await invoke('move_mouse', { x: message.x, y: message.y })
         } else {
+          signaling.send({ type: 'agent_control', data: message })
           callAgent('mouse', 'POST', message)
         }
       } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick' || message.type === 'contextmenu') {
         const btn = message.type === 'contextmenu' ? 2 : (message.button ?? 0)
+        const payload = { ...message, button: btn }
         if (isNativeApp()) {
           await invoke('move_mouse', { x: message.x, y: message.y })
           if (message.type === 'mousedown') {
@@ -602,7 +640,8 @@ function createHostSession() {
             await invoke('mouse_event', { button: btn, isDown: false })
           }
         } else {
-          callAgent('mouse', 'POST', { ...message, button: btn })
+          signaling.send({ type: 'agent_control', data: payload })
+          callAgent('mouse', 'POST', payload)
         }
       } else if (message.type === 'scroll') {
         if (isNativeApp()) {
@@ -611,6 +650,7 @@ function createHostSession() {
             deltaY: scrollSteps(message.deltaY),
           })
         } else {
+          signaling.send({ type: 'agent_control', data: message })
           callAgent('mouse', 'POST', message)
         }
       } else if (message.type === 'keydown' || message.type === 'keyup') {
@@ -619,6 +659,7 @@ function createHostSession() {
           if (message.type === 'keydown') pressedKeys.add(message.key)
           else pressedKeys.delete(message.key)
         } else {
+          signaling.send({ type: 'agent_control', data: message })
           callAgent('key', 'POST', message)
         }
       } else if (message.type === 'clipboard') {
@@ -707,6 +748,7 @@ function createHostSession() {
     if (pendingController.value || controlEnabled.value) {
       signaling.send({ type: 'session_ended' })
     }
+    stopAgentPolling()
     closePeer()
     screenShare.stopScreenShare()
     pendingController.value = false
@@ -719,6 +761,7 @@ function createHostSession() {
 
   function disconnect() {
     stopSharing()
+    stopAgentPolling()
     signaling.disconnect()
     sessionCode.value = ''
     hostToken = ''
@@ -737,11 +780,13 @@ function createHostSession() {
     incomingCallerId: readonly(incomingCallerId),
     controlEnabled: readonly(controlEnabled),
     signalingConnected: signaling.isConnected,
+    hasAgent: readonly(hasAgent),
     chatMessages,
     unreadCount,
     sendChat,
     markChatRead,
     ensureOnline,
+    checkAgentStatus,
     start,
     stopSharing,
     disconnect,

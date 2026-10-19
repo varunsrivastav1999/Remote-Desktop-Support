@@ -29,6 +29,25 @@
           <span :class="['status-dot', statusDot]"></span>
           {{ session.statusText.value }}
         </p>
+
+        <!-- Native Control Agent Status -->
+        <div class="agent-status-badge" :class="session.hasAgent.value ? 'agent-status-badge--active' : 'agent-status-badge--warn'">
+          <span class="agent-status-indicator"></span>
+          <span>{{ session.hasAgent.value ? 'Native Remote Control Active (Clicks, Keys & Terminal Enabled)' : 'Remote Control Companion Offline' }}</span>
+        </div>
+
+        <!-- 1-Click Launch Command for Browser Host -->
+        <div v-if="!session.hasAgent.value && session.sessionCode.value" class="agent-launcher-box">
+          <p class="agent-launcher-title">To enable mouse, keyboard, and terminal control on this computer:</p>
+          <div class="agent-launcher-command">
+            <code class="font-mono">{{ agentCommand }}</code>
+            <button class="btn btn--xs btn--secondary" @click="copyAgentCommand">
+              {{ copiedCmd ? 'Copied!' : 'Copy' }}
+            </button>
+          </div>
+          <p class="agent-launcher-hint">Run this in your terminal. It connects automatically to this desk.</p>
+        </div>
+
         <button v-if="!session.localStream.value" class="btn btn--primary btn--lg" @click="beginShare">
           Select Screen to Share
         </button>
@@ -96,6 +115,21 @@ const statusDot = computed(() => {
   if (session.sessionCode.value) return 'status-dot--waiting'
   return 'status-dot--offline'
 })
+
+const copiedCmd = ref(false)
+const agentCommand = computed(() => {
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const code = session.sessionCode.value || ''
+  return `curl -sSL ${origin}/agent.py | python3 - --device ${code}`
+})
+
+function copyAgentCommand() {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(agentCommand.value)
+    copiedCmd.value = true
+    setTimeout(() => { copiedCmd.value = false }, 2500)
+  }
+}
 
 watch(() => session.localStream.value, (stream, previousStream) => {
   if (videoEl.value) videoEl.value.srcObject = stream
@@ -360,5 +394,75 @@ onUnmounted(() => {
 @keyframes pulse-border {
   0%, 100% { border-color: rgba(245, 124, 0, 0.5); }
   50% { border-color: rgba(245, 124, 0, 1); }
+}
+
+.agent-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.agent-status-badge--active {
+  background: rgba(76, 175, 80, 0.15);
+  border: 1px solid rgba(76, 175, 80, 0.4);
+  color: #81c784;
+}
+
+.agent-status-badge--warn {
+  background: rgba(255, 152, 0, 0.12);
+  border: 1px solid rgba(255, 152, 0, 0.35);
+  color: #ffb74d;
+}
+
+.agent-status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.agent-launcher-box {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.agent-launcher-title {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.agent-launcher-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.agent-launcher-command code {
+  flex: 1;
+  font-size: 0.72rem;
+  color: #64b5f6;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.agent-launcher-hint {
+  margin: 6px 0 0;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.4);
 }
 </style>
