@@ -92,18 +92,10 @@ services:
 
   # Public tunnel for Internet access (Supports both Quick Tunnel and Permanent Named Tunnel Token)
   cloudflare_tunnel:
-    image: cloudflare/cloudflared:latest
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.tunnel
     restart: unless-stopped
-    command: >-
-      sh -c '
-      if [ -n "$$CLOUDFLARE_TUNNEL_TOKEN" ]; then
-        echo "Starting Cloudflare Tunnel with permanent token..."
-        exec cloudflared tunnel --no-autoupdate run --token "$$CLOUDFLARE_TUNNEL_TOKEN"
-      else
-        echo "Starting Cloudflare Quick Tunnel..."
-        exec cloudflared tunnel --url http://app:80 --no-autoupdate
-      fi
-      '
     environment:
       - CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
