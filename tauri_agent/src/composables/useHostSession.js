@@ -254,6 +254,7 @@ function createHostSession() {
     controlChannel.onmessage = (event) => handleControlMessage(event.data)
 
     // ─── Terminal Data Channel ─────────────────────────────
+    let terminalLineBuffer = ''
     terminalChannel = peerConnection.createDataChannel('terminal', { ordered: true })
     terminalChannel.onopen = async () => {
       console.log('[Remote Desktop Host] Terminal channel OPEN')
@@ -261,23 +262,96 @@ function createHostSession() {
         try {
           await invoke('start_terminal')
           startTerminalPolling()
+          return
         } catch (e) {
           console.warn('[Remote Desktop Host] Native terminal start:', e)
         }
-      } else {
-        terminalChannel.send('\x1b[1;32mRemote Desktop Interactive Shell Connected.\x1b[0m\r\n$ ')
       }
+      terminalChannel.send('\x1b[1;32mRemote Desktop Interactive Shell Connected.\x1b[0m\r\n$ ')
     }
+
     terminalChannel.onmessage = async (event) => {
       if (isNativeApp()) {
         try {
           await invoke('write_terminal', { data: event.data })
+          return
         } catch (e) {
-          console.warn('write_terminal error:', e)
+          console.warn('write_terminal fallback to interactive shell runner:', e)
         }
+      }
+
+      // Interactive Shell Runner (Browser mode & Companion Agent / Backend fallback)
+      const char = event.data
+      if (char === '\r') {
+        // Enter pressed
+        terminalChannel.send('\r\n')
+        const cmd = terminalLineBuffer.trim()
+        terminalLineBuffer = ''
+
+        if (!cmd) {
+          terminalChannel.send('$ ')
+          return
+        }
+
+        if (cmd === 'clear') {
+          terminalChannel.send('\x1b[2J\x1b[H$ ')
+          return
+        }
+
+        let executed = false
+        // 1. Try local companion agent first (executes on host OS)
+        try {
+          const localRes = await fetch('http://127.0.0.1:8765/terminal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd }),
+            signal: AbortSignal.timeout(15000),
+          })
+          if (localRes.ok) {
+            const d = await localRes.json()
+            const out = (d.stdout || '') + (d.stderr || '')
+            const formatted = out.replace(/\r?\n/g, '\r\n')
+            terminalChannel.send(formatted ? (formatted.endsWith('\r\n') ? formatted : formatted + '\r\n') + '$ ' : '$ ')
+            executed = true
+          }
+        } catch (_) {}
+
+        // 2. Fallback to backend terminal runner
+        if (!executed) {
+          try {
+            const apiRes = await fetch(apiUrl('/api/v1/terminal/exec', settings), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: cmd }),
+              signal: AbortSignal.timeout(15000),
+            })
+            if (apiRes.ok) {
+              const d = await apiRes.json()
+              const out = (d.stdout || '') + (d.stderr || '')
+              const formatted = out.replace(/\r?\n/g, '\r\n')
+              terminalChannel.send(formatted ? (formatted.endsWith('\r\n') ? formatted : formatted + '\r\n') + '$ ' : '$ ')
+              executed = true
+            }
+          } catch (_) {}
+        }
+
+        if (!executed) {
+          terminalChannel.send('Failed to execute command: local agent and backend unreachable.\r\n$ ')
+        }
+      } else if (char === '\x7f' || char === '\b') {
+        // Backspace
+        if (terminalLineBuffer.length > 0) {
+          terminalLineBuffer = terminalLineBuffer.slice(0, -1)
+          terminalChannel.send('\b \b')
+        }
+      } else if (char === '\x03') {
+        // Ctrl+C
+        terminalLineBuffer = ''
+        terminalChannel.send('^C\r\n$ ')
       } else {
-        if (event.data === '\r') terminalChannel.send('\r\n$ ')
-        else terminalChannel.send(event.data)
+        // Regular characters
+        terminalLineBuffer += char
+        terminalChannel.send(char)
       }
     }
     terminalChannel.onclose = () => {
@@ -357,27 +431,66 @@ function createHostSession() {
 
     try {
       if (message.type === 'mousemove') {
-        if (isNativeApp()) await invoke('move_mouse', { x: message.x, y: message.y })
-      } else if (message.type === 'mousedown' || message.type === 'mouseup') {
         if (isNativeApp()) {
           await invoke('move_mouse', { x: message.x, y: message.y })
-          await invoke('mouse_event', { button: message.button, isDown: message.type === 'mousedown' })
+        } else {
+          fetch('http://127.0.0.1:8765/mouse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message),
+          }).catch(() => {})
         }
-        if (message.type === 'mousedown') pressedButtons.add(message.button)
-        else pressedButtons.delete(message.button)
+      } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick') {
+        if (isNativeApp()) {
+          await invoke('move_mouse', { x: message.x, y: message.y })
+          if (message.type === 'mousedown') {
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
+            pressedButtons.add(message.button ?? 0)
+          } else if (message.type === 'mouseup') {
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
+            pressedButtons.delete(message.button ?? 0)
+          } else if (message.type === 'click') {
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
+          } else if (message.type === 'dblclick') {
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
+            await new Promise(r => setTimeout(r, 40))
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: true })
+            await invoke('mouse_event', { button: message.button ?? 0, isDown: false })
+          }
+        } else {
+          fetch('http://127.0.0.1:8765/mouse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message),
+          }).catch(() => {})
+        }
       } else if (message.type === 'scroll') {
         if (isNativeApp()) {
           await invoke('scroll_mouse', {
             deltaX: scrollSteps(message.deltaX),
             deltaY: scrollSteps(message.deltaY),
           })
+        } else {
+          fetch('http://127.0.0.1:8765/mouse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message),
+          }).catch(() => {})
         }
       } else if (message.type === 'keydown' || message.type === 'keyup') {
         if (isNativeApp()) {
           await invoke('key_event', { key: message.key, isDown: message.type === 'keydown' })
+          if (message.type === 'keydown') pressedKeys.add(message.key)
+          else pressedKeys.delete(message.key)
+        } else {
+          fetch('http://127.0.0.1:8765/key', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message),
+          }).catch(() => {})
         }
-        if (message.type === 'keydown') pressedKeys.add(message.key)
-        else pressedKeys.delete(message.key)
       } else if (message.type === 'clipboard') {
         if (message.text && navigator.clipboard && window.isSecureContext) {
           navigator.clipboard.writeText(message.text).catch(() => {})

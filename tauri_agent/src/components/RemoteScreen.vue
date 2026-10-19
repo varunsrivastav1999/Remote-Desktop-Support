@@ -120,6 +120,7 @@ onUnmounted(() => {
  */
 function handleMouse(type, event) {
   showCursorHint.value = false
+  container.value?.focus()
 
   // Throttle mousemove
   if (type === 'mousemove') {

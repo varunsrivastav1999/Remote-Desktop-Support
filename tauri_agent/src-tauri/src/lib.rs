@@ -194,8 +194,9 @@ fn start_terminal() -> Result<String, String> {
 fn write_terminal(data: String) -> Result<(), String> {
     let mut state = get_terminal_state().lock().map_err(|e| e.to_string())?;
     if let Some(session) = state.as_mut() {
+        let normalized = data.replace('\r', "\n");
         session.stdin
-            .write_all(data.as_bytes())
+            .write_all(normalized.as_bytes())
             .map_err(|e| format!("Write failed: {}", e))?;
         session.stdin.flush().map_err(|e| format!("Flush failed: {}", e))?;
         Ok(())

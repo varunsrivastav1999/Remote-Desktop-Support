@@ -12,5 +12,13 @@ module.exports = {
         NODE_ENV: "development",
       },
     },
+    {
+      name: "local-companion-agent",
+      cwd: ".",
+      script: "python3",
+      args: "scripts/local_agent.py",
+      autorestart: true,
+      watch: false,
+    },
   ],
 };

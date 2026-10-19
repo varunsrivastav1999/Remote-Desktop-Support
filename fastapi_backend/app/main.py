@@ -11,6 +11,7 @@ from app.routers import (
     health_router,
     sessions_router,
     signaling_router,
+    terminal_router,
 )
 
 logging.basicConfig(
@@ -63,3 +64,4 @@ app.include_router(health_router)
 app.include_router(devices_router)
 app.include_router(sessions_router)
 app.include_router(signaling_router)
+app.include_router(terminal_router)
