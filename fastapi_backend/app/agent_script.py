@@ -610,6 +610,9 @@ async def run_websocket_client(server_url, device_id):
     reconnect_delay = 1
 
     while True:
+        # Input is injected only between take_control and release_control, which the server
+        # sends when the host grants or ends control. Each new connection starts in View Only.
+        control_active = False
         try:
             async with websockets.connect(target, ping_interval=20, ping_timeout=15) as ws:
                 meta = get_system_metadata(device_id)
@@ -637,16 +640,20 @@ async def run_websocket_client(server_url, device_id):
                         req_id = data.get("req_id")
 
                         if mtype == "take_control":
+                            control_active = True
                             await ws.send(json.dumps({"type": "reply", "reply_to": "take_control", "req_id": req_id, "status": "granted"}))
                             await ws.send(json.dumps({"type": "control_granted"}))
                         elif mtype in ("release_control", "release_all"):
+                            control_active = False
                             release_all_inputs()
                             await ws.send(json.dumps({"type": "reply", "reply_to": "release_control", "req_id": req_id, "status": "released"}))
                             await ws.send(json.dumps({"type": "control_released"}))
                         elif mtype in ("mousemove", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "scroll"):
-                            execute_mouse(data)
+                            if control_active:
+                                execute_mouse(data)
                         elif mtype in ("keydown", "keyup"):
-                            execute_key(data)
+                            if control_active:
+                                execute_key(data)
                         elif mtype == "clipboard":
                             text = data.get("text", "")
                             if text:
@@ -680,8 +687,15 @@ async def run_websocket_client(server_url, device_id):
 
         except Exception as conn_err:
             print(f"[!] Server connection interrupted: {conn_err}. Reconnecting in {reconnect_delay}s...")
-            await asyncio.sleep(reconnect_delay)
+            reconnect_wait = reconnect_delay
             reconnect_delay = min(reconnect_delay * 2, 20)
+        else:
+            reconnect_wait = 0
+        finally:
+            if control_active:
+                # Never leave buttons or modifier keys held down when the link drops mid-control
+                release_all_inputs()
+        await asyncio.sleep(reconnect_wait)
 
 
 # ═════════════════════════════════════════════════════════════

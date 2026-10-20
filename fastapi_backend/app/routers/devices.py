@@ -187,9 +187,12 @@ async def get_device_agent_status(
     norm_id = normalize_device_id(device_id)
     redis_client = get_redis(request)
     is_online = await redis_client.exists(f"device:{norm_id}:agent_online")
+    # Whether the agent has a working mouse/keyboard driver (reported in its agent_info)
+    has_input = await redis_client.hget(f"device:{norm_id}:agent_info", "has_input")
     return {
         "device_id": norm_id,
         "agent_online": bool(is_online),
+        "has_input": bool(is_online) and has_input != "false",
     }
 
 

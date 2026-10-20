@@ -17,6 +17,11 @@
 import { ref, readonly, reactive } from 'vue'
 import { getDefaultIceServers } from './serverConfig.js'
 
+const INPUT_EVENT_TYPES = new Set([
+  'mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'scroll',
+  'keydown', 'keyup',
+])
+
 export function useWebRTC(signaling) {
   const peerConnection = ref(null)
   const dataChannel = ref(null)
@@ -34,6 +39,11 @@ export function useWebRTC(signaling) {
   const controlPending = ref(false)
   const controlError = ref('')
   let controlTimer = null
+  // Bumped on every take/release request; the host echoes it so stale acks are ignored
+  let controlSeq = 0
+  // Where input goes once granted: 'host' (native host injects it, via the data channel)
+  // or 'agent' (companion agent injects it, via signaling). Set by the host's grant.
+  let inputRoute = null
 
   // ─── Authentication ──────────────────────────────────────
   const authRequired = ref(false)
@@ -204,13 +214,16 @@ export function useWebRTC(signaling) {
         } else if (msg.type === 'peer_left') {
           console.log(`[WebRTC] Peer left (${msg.role})`)
           connectionState.value = 'disconnected'
+          resetControlState()
         } else if (msg.type === 'permission_denied') {
           console.warn('[WebRTC] Host denied this control request')
           connectionState.value = 'failed'
+          resetControlState()
           signaling.disconnect()
         } else if (msg.type === 'session_ended') {
           console.log('[WebRTC] Host ended the sharing session')
           connectionState.value = 'disconnected'
+          resetControlState()
           signaling.disconnect()
         } else if (msg.type === 'error') {
           console.error('[WebRTC] Signaling error:', msg.message)
@@ -218,7 +231,7 @@ export function useWebRTC(signaling) {
         }
 
         // Forward control confirmation and session updates to handleControlResponse
-        if (['control_granted', 'control_released', 'control_revoked', 'system_info', 'monitors', 'monitor_switched', 'quality_changed', 'chat', 'clipboard'].includes(msg.type)) {
+        if (['control_granted', 'control_released', 'control_revoked', 'control_denied', 'system_info', 'monitors', 'monitor_switched', 'quality_changed', 'chat', 'clipboard'].includes(msg.type)) {
           handleControlResponse(JSON.stringify(msg))
         } else if (msg.type === 'agent_control' || msg.type === 'reply') {
           const inner = msg.data || msg
@@ -366,33 +379,41 @@ export function useWebRTC(signaling) {
           break
 
         case 'control_granted':
-          if (controlTimer) {
-            clearTimeout(controlTimer)
-            controlTimer = null
-          }
+          // Acks arrive on both the data channel and signaling; only honour the first one for our
+          // latest request (hosts without seq support: only while a request is outstanding)
+          if (isControlling.value || (data.seq === undefined ? !controlPending.value : data.seq !== controlSeq)) break
+          clearControlTimer()
           controlPending.value = false
           isControlling.value = true
           controlError.value = ''
-          console.log('[WebRTC] Remote machine confirmed control granted -> CONTROL ACTIVE')
+          inputRoute = data.input_route || null
+          console.log(`[WebRTC] Remote machine confirmed control granted (input via ${inputRoute || 'host+agent'}) -> CONTROL ACTIVE`)
           break
 
         case 'control_released':
-          if (controlTimer) {
-            clearTimeout(controlTimer)
-            controlTimer = null
-          }
+          if (!(isControlling.value || controlPending.value) || (data.seq !== undefined && data.seq !== controlSeq)) break
+          clearControlTimer()
           controlPending.value = false
           isControlling.value = false
+          inputRoute = null
           console.log('[WebRTC] Remote machine confirmed control released -> VIEW ONLY')
           break
 
-        case 'control_revoked':
-          if (controlTimer) {
-            clearTimeout(controlTimer)
-            controlTimer = null
-          }
+        case 'control_denied':
+          if (!controlPending.value || (data.seq !== undefined && data.seq !== controlSeq)) break
+          clearControlTimer()
           controlPending.value = false
           isControlling.value = false
+          inputRoute = null
+          controlError.value = data.reason || 'Remote host denied the control request.'
+          console.warn('[WebRTC] Remote host denied control:', controlError.value)
+          break
+
+        case 'control_revoked':
+          clearControlTimer()
+          controlPending.value = false
+          isControlling.value = false
+          inputRoute = null
           controlError.value = 'Remote host revoked control permissions.'
           console.log('[WebRTC] Remote host revoked control -> VIEW ONLY')
           break
@@ -408,57 +429,77 @@ export function useWebRTC(signaling) {
 
   // ─── Control Methods ─────────────────────────────────────
 
+  /**
+   * Send a message to the host peer: data channel when open, signaling relay otherwise.
+   */
   function sendControl(event) {
-    let sent = false
-    // 1. Send via WebRTC DataChannel (low-latency direct peer-to-peer)
     if (dataChannel.value && dataChannel.value.readyState === 'open') {
       try {
         dataChannel.value.send(JSON.stringify(event))
-        sent = true
+        return true
       } catch (e) {
         console.warn('[WebRTC] DataChannel send error:', e)
       }
     }
+    return signaling.send({ type: 'control_event', data: event })
+  }
 
-    // 2. Dual-transport fallback via Signaling WebSocket
-    // For input events (mouse, key, scroll) and control handshakes (take_control, release_control, clipboard),
-    // ALWAYS dispatch via signaling WebSocket so the native companion agent running on the remote
-    // machine receives them directly through Redis pub/sub.
-    const isDirectAgentEvent = [
-      'take_control', 'release_control', 'get_monitors', 'clipboard',
-      'mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'scroll',
-      'keydown', 'keyup'
-    ].includes(event.type)
-
-    if (isDirectAgentEvent || !sent) {
-      try {
-        if (signaling && (signaling.isConnected?.value || signaling.send)) {
-          signaling.send({ type: 'agent_control', data: event })
-          sent = true
-        }
-      } catch (e) {
-        console.warn('[WebRTC] Signaling send error:', e)
-      }
-    }
+  /**
+   * Send a mouse/keyboard event to whichever side injects it on the remote machine.
+   * Each event takes exactly one path, so the remote OS never receives it twice.
+   */
+  function sendInput(event) {
+    if (!isControlling.value || !INPUT_EVENT_TYPES.has(event.type)) return false
+    let sent = false
+    if (inputRoute !== 'agent') sent = sendControl(event)
+    // Browser hosts cannot inject OS input; their companion agent receives it via the server
+    if (inputRoute !== 'host') sent = signaling.send({ type: 'agent_control', data: event }) || sent
     return sent
+  }
+
+  function clearControlTimer() {
+    if (controlTimer) {
+      clearTimeout(controlTimer)
+      controlTimer = null
+    }
+  }
+
+  // The host's control state does not survive it leaving, so drop back to View Only locally
+  function resetControlState() {
+    clearControlTimer()
+    controlPending.value = false
+    isControlling.value = false
+    inputRoute = null
+  }
+
+  function sendReleaseControl() {
+    controlSeq++
+    const message = { type: 'release_control', seq: controlSeq }
+    sendControl(message)
+    // Also tell the server directly so remote input stops even if the data channel is down
+    signaling.send(message)
   }
 
   function sendAuth(password) { return sendControl({ type: 'auth', password }) }
 
   function takeControl() {
+    controlSeq++
     controlPending.value = true
     controlError.value = ''
     console.log('[WebRTC] Requesting Take Control from remote machine...')
 
-    // Dispatch take_control request to remote host peer and companion daemon
-    sendControl({ type: 'take_control' })
+    // The host decides; it answers control_granted (with the input route) or control_denied
+    sendControl({ type: 'take_control', seq: controlSeq })
 
-    if (controlTimer) clearTimeout(controlTimer)
+    clearControlTimer()
     controlTimer = setTimeout(() => {
+      controlTimer = null
       if (controlPending.value && !isControlling.value) {
         controlPending.value = false
         controlError.value = 'Remote machine did not acknowledge Take Control within 4.5s. Ensure remote host or companion agent is active.'
         console.warn('[WebRTC] Take Control timed out without remote acknowledgment.')
+        // If the host grants after all, make sure it does not stay in control behind our back
+        sendReleaseControl()
       }
     }, 4500)
 
@@ -466,13 +507,11 @@ export function useWebRTC(signaling) {
   }
 
   function releaseControl() {
-    if (controlTimer) {
-      clearTimeout(controlTimer)
-      controlTimer = null
-    }
+    clearControlTimer()
     controlPending.value = false
     isControlling.value = false
-    sendControl({ type: 'release_control' })
+    inputRoute = null
+    sendReleaseControl()
     console.log('[WebRTC] Release Control sent -> VIEW ONLY')
     return true
   }
@@ -482,13 +521,11 @@ export function useWebRTC(signaling) {
   }
 
   function sendMouseEvent(type, x, y, extra = {}) {
-    if (!isControlling.value) return false
-    return sendControl({ type, x, y, ...extra })
+    return sendInput({ type, x, y, ...extra })
   }
 
   function sendKeyEvent(type, key, modifiers = {}) {
-    if (!isControlling.value) return false
-    return sendControl({ type, key, ...modifiers })
+    return sendInput({ type, key, ...modifiers })
   }
 
   // ─── Quality ─────────────────────────────────────────────
@@ -645,7 +682,7 @@ export function useWebRTC(signaling) {
     remoteStream.value = null
     connectionState.value = 'disconnected'
     dataChannelState.value = 'closed'
-    isControlling.value = false
+    resetControlState()
     console.log('[WebRTC] Connection closed')
   }
 

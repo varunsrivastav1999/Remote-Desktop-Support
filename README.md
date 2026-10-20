@@ -75,6 +75,7 @@ Device ID: AG-482-193-721                           Device ID: AG-735-281-904
 - **Take Control / Release Control Workflow:**
   - **VIEW ONLY Mode by Default:** Sessions connect initially in View Only mode so screen monitoring does not interfere with the host.
   - **Prominent Take Control Button:** Clicking `Take Control` initiates a verified handshake with the remote host peer and companion daemon. The UI only switches to `CONTROL ACTIVE` upon real acknowledgment from the remote machine.
+  - **Host-Authorized Control:** The host is the single authority for control. A browser host refuses `Take Control` (with an explanation) when its companion agent is not connected, and the server relays mouse/keyboard input to the agent only while control is granted, so View Only is enforced on the remote machine itself.
   - **Full Remote Interaction:** Dispatches mouse movements, single/double clicks, context menu right-clicks, drag-and-drop, scroll wheels, keystrokes, and keyboard shortcuts (Ctrl+C, Ctrl+V, Alt, Meta/Windows/Cmd, Function keys) directly to the remote OS input system.
   - **Instant Release Control:** Clicking `Release Control` immediately releases all pressed inputs and reverts to View Only mode without interrupting the video stream.
   - **Strict Target Isolation:** Zero local machine execution; all operations route strictly to the connected remote device ID.

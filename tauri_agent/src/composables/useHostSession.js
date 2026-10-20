@@ -52,22 +52,14 @@ function createHostSession() {
       hasAgent.value = true
       return true
     }
-    // Check direct local companion daemon first
-    try {
-      const local = await fetch('http://127.0.0.1:8765/health', { signal: AbortSignal.timeout(1000) })
-      if (local && local.ok) {
-        hasAgent.value = true
-        return true
-      }
-    } catch (_) {}
-
-    // Check backend agent presence for this device
+    // Remote input reaches the companion agent only through its server connection for this
+    // Device ID, so server-side presence (not a local health probe) decides whether it works.
     if (sessionCode.value) {
       try {
         const res = await fetch(apiUrl(`/api/v1/devices/${sessionCode.value}/agent_status`, settings), { signal: AbortSignal.timeout(2000) })
         if (res && res.ok) {
           const d = await res.json()
-          hasAgent.value = Boolean(d.agent_online)
+          hasAgent.value = Boolean(d.agent_online) && d.has_input !== false
           return hasAgent.value
         }
       } catch (_) {}
@@ -232,15 +224,12 @@ function createHostSession() {
         }
       }
 
-      if (message.type === 'take_control' || (message.type === 'agent_control' && message.data?.type === 'take_control')) {
-        await handleControlMessage({ type: 'take_control' })
+      if (message.type === 'take_control' || message.type === 'release_control') {
+        await handleControlMessage(message)
         return
       }
-      if (message.type === 'release_control' || (message.type === 'agent_control' && message.data?.type === 'release_control')) {
-        await handleControlMessage({ type: 'release_control' })
-        return
-      }
-      if ((message.type === 'agent_control' || message.type === 'control_event') && message.data) {
+      // Data-channel fallback relayed by the server (agent-bound input is never relayed here)
+      if (message.type === 'control_event' && message.data) {
         await handleControlMessage(message.data)
         return
       }
@@ -343,7 +332,8 @@ function createHostSession() {
       } else if (['failed', 'disconnected'].includes(peerConnection.connectionState)) {
         state.value = 'waiting'
         statusText.value = 'Connection ended. Ready for a new request.'
-        controlEnabled.value = false
+        // Release through the normal path so the server and controller drop control too
+        if (controlEnabled.value) handleControlMessage({ type: 'release_control' })
       }
     }
 
@@ -681,12 +671,25 @@ function createHostSession() {
     try {
       // 1. Session control commands (always processed)
       if (message.type === 'take_control') {
+        // The native app injects input itself; a browser host relies on the companion agent
+        const inputRoute = isNativeApp() ? 'host' : 'agent'
+        if (inputRoute === 'agent' && !await checkAgentStatus()) {
+          controlEnabled.value = false
+          const denial = {
+            type: 'control_denied',
+            seq: message.seq,
+            reason: 'The companion agent is not running on the remote computer, so mouse and keyboard input cannot be delivered.',
+          }
+          sendControl(denial)
+          signaling.send(denial)
+          statusText.value = 'Control request refused: start the companion agent to allow remote input.'
+          return
+        }
         controlEnabled.value = true
-        sendControl({ type: 'control_granted' })
-        try {
-          signaling.send({ type: 'control_granted' })
-          signaling.send({ type: 'agent_control', data: { type: 'take_control' } })
-        } catch (_) {}
+        const grant = { type: 'control_granted', seq: message.seq, input_route: inputRoute }
+        sendControl(grant)
+        // The signaling copy also makes the server start relaying input to the companion agent
+        signaling.send(grant)
         statusText.value = 'Remote user has taken control.'
         return
       }
@@ -694,11 +697,10 @@ function createHostSession() {
       if (message.type === 'release_control') {
         controlEnabled.value = false
         releasePressedInput()
-        sendControl({ type: 'control_released' })
-        try {
-          signaling.send({ type: 'control_released' })
-          signaling.send({ type: 'agent_control', data: { type: 'release_control' } })
-        } catch (_) {}
+        const ack = { type: 'control_released', seq: message.seq }
+        sendControl(ack)
+        // The server stops relaying input and has the companion agent release held keys/buttons
+        signaling.send(ack)
         statusText.value = 'Remote user released control. View only mode.'
         return
       }

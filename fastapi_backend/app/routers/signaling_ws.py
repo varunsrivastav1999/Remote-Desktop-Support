@@ -21,6 +21,11 @@ SIGNAL_TYPES = {
     "permission_denied": ("host", "client"),
     "session_ended": ("host", "client"),
 }
+# Remote input events. These are only relayed while the host has granted control to the client.
+INPUT_EVENT_TYPES = {
+    "mousemove", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "scroll",
+    "keydown", "keyup",
+}
 
 
 def normalize_session_code(val: str) -> str:
@@ -121,6 +126,21 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
         await redis_client.set(f"device:{raw_device_id}:agent_online", "1", ex=60)
     await websocket.send_json({"type": "agent_connected", "device_id": norm_device_id})
 
+    async def keep_presence():
+        # Presence lasts as long as this socket, so agents need not send app-level heartbeats
+        try:
+            while True:
+                await asyncio.sleep(20)
+                await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
+                if raw_device_id != norm_device_id:
+                    await redis_client.set(f"device:{raw_device_id}:agent_online", "1", ex=60)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Agent presence refresh failed for {norm_device_id}: {e}")
+
+    presence_task = asyncio.create_task(keep_presence())
+
     async def forward_to_agent():
         try:
             async for message in pubsub.listen():
@@ -150,10 +170,11 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
                 for k, v in data.items():
                     flat_info[k] = json.dumps(v) if isinstance(v, (list, dict, bool)) else str(v)
                 await redis_client.hset(f"device:{norm_device_id}:agent_info", mapping=flat_info)
+                # Agent traffic answers the host's requests; the controller never needs it.
                 session_payload = json.dumps({
                     "connection_id": "agent",
                     "sender_role": "agent",
-                    "target_role": None,
+                    "target_role": "host",
                     "data": {"type": "agent_info", **data},
                 })
                 await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
@@ -163,7 +184,7 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
                 session_payload = json.dumps({
                     "connection_id": "agent",
                     "sender_role": "agent",
-                    "target_role": None,
+                    "target_role": "host",
                     "data": data,
                 })
                 await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
@@ -175,6 +196,7 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
         logger.debug(f"Agent WS disconnected for {norm_device_id}: {e}")
     finally:
         task.cancel()
+        presence_task.cancel()
         await redis_client.delete(f"device:{norm_device_id}:agent_online")
         if raw_device_id != norm_device_id:
             await redis_client.delete(f"device:{raw_device_id}:agent_online")
@@ -255,6 +277,53 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
         if norm_code != code:
             await redis_client.publish(f"channel:session:{norm_code}", payload)
 
+    # Control state: the host is the only authority. This key holds the connection id of the
+    # client the host granted control to; input is relayed only from that connection.
+    control_key = f"session:{code}:control"
+
+    async def publish_to_agent(event: dict) -> None:
+        raw = json.dumps(event)
+        await redis_client.publish(f"channel:agent:{norm_code}", raw)
+        if norm_code != code:
+            await redis_client.publish(f"channel:agent:{code}", raw)
+
+    async def holds_control() -> bool:
+        return role == "client" and await redis_client.get(control_key) == connection_id
+
+    async def end_control(notify_host: bool = False) -> None:
+        await redis_client.delete(control_key)
+        # The agent stops injecting and releases any held buttons/keys
+        await publish_to_agent({"type": "release_control"})
+        if notify_host:
+            await publish_event("client", {"type": "release_control"}, "host")
+
+    async def route_control_event(message_type: str, event: dict) -> None:
+        """Route a session-control or input event sent by a peer.
+
+        `agent_control` is bound for the companion agent, `control_event` for the host peer
+        (data-channel fallback). Each event goes to exactly one place so input is never
+        injected twice, and input only flows while the sending client holds control.
+        """
+        event_type = event.get("type")
+        if role == "client":
+            if event_type == "take_control":
+                # Only the host can grant control; the agent is armed once it does
+                await publish_event(role, event, "host")
+            elif event_type == "release_control":
+                await end_control()
+                await publish_event(role, event, "host")
+            elif event_type in INPUT_EVENT_TYPES and not await holds_control():
+                return
+            elif message_type == "control_event":
+                await publish_event(role, event, "host")
+            elif event_type in INPUT_EVENT_TYPES:
+                await publish_to_agent(event)
+            # Any other agent request from a client (terminal, filesystem, clipboard, ...) is
+            # dropped: those are issued by the host on the controller's behalf.
+        elif message_type == "agent_control" and event_type not in INPUT_EVENT_TYPES:
+            # Host-originated agent requests (terminal, filesystem, clipboard, info)
+            await publish_to_agent(event)
+
     async def listen_for_peer() -> None:
         try:
             async for message in pubsub.listen():
@@ -287,6 +356,8 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
             if message_type == "ping":
                 if role:
                     await redis_client.expire(peer_key(role), PEER_TTL_SECONDS)
+                    if await holds_control():
+                        await redis_client.expire(control_key, PEER_TTL_SECONDS)
                 await websocket.send_json({"type": "pong"})
                 continue
 
@@ -365,6 +436,12 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     ex=PEER_TTL_SECONDS,
                 )
 
+                if requested_role == "client":
+                    holder = await redis_client.get(control_key)
+                    if holder and holder != connection_id:
+                        # Control belongs to a previous controller connection; the new one must ask again
+                        await end_control(notify_host=True)
+
                 role = requested_role
                 other_role = "client" if role == "host" else "host"
                 await websocket.send_json({"type": "registered", "role": role})
@@ -427,20 +504,25 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     await redis_client.delete(f"session:{norm_code}:pending_request")
             elif message_type == "ice_restart_request":
                 target_role = "host"
-            elif message_type in ("agent_control", "take_control", "release_control", "control_event"):
-                ctrl_payload = data.get("data") if "data" in data else data
-                if message_type in ("take_control", "release_control") and isinstance(ctrl_payload, dict):
-                    ctrl_payload.setdefault("type", message_type)
-                ctrl_json = json.dumps(ctrl_payload)
-                # Dispatch to native companion agent channels (both normalized and raw)
-                await redis_client.publish(f"channel:agent:{norm_code}", ctrl_json)
-                if norm_code != code:
-                    await redis_client.publish(f"channel:agent:{code}", ctrl_json)
-                # Forward to host peer in the session if sent by client
-                target_role = "host" if role == "client" else "client"
-                await publish_event(role, data, target_role)
+            elif message_type in ("agent_control", "control_event"):
+                if isinstance(data.get("data"), dict):
+                    await route_control_event(message_type, data["data"])
                 continue
-            elif message_type in ("control_granted", "control_released", "control_revoked", "system_info", "monitors", "monitor_switched", "quality_changed", "host_stats"):
+            elif message_type in ("take_control", "release_control"):
+                await route_control_event("control_event", data)
+                continue
+            elif message_type in ("control_granted", "control_released", "control_revoked", "control_denied") and role == "host":
+                if message_type == "control_granted":
+                    client_connection = await redis_client.get(peer_key("client"))
+                    if client_connection:
+                        await redis_client.set(control_key, client_connection, ex=PEER_TTL_SECONDS)
+                        if data.get("input_route", "agent") == "agent":
+                            # Arm the companion agent; it injects input only while armed
+                            await publish_to_agent({"type": "take_control"})
+                else:
+                    await end_control()
+                target_role = "client"
+            elif message_type in ("system_info", "monitors", "monitor_switched", "quality_changed", "host_stats"):
                 # Forward from host to client
                 target_role = "client"
             elif message_type in ("chat", "clipboard"):
@@ -461,8 +543,12 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
     finally:
         listener_task.cancel()
         if role:
+            if await holds_control():
+                await end_control()
             stored_connection = await redis_client.get(peer_key(role))
             if stored_connection == connection_id:
+                if role == "host":
+                    await end_control()
                 await redis_client.delete(peer_key(role))
                 other_role = "client" if role == "host" else "host"
                 await publish_event(
