@@ -34,7 +34,6 @@ function createHostSession() {
   const hasAgent = ref(isNativeApp())
 
   let settings = {}
-  let hostToken = ''
   let peerConnection = null
   let controlChannel = null
   let terminalChannel = null
@@ -95,28 +94,6 @@ function createHostSession() {
     })
   }
 
-  async function callAgent(endpoint, method = 'POST', data = null) {
-    const cleanPath = endpoint.replace(/^\//, '')
-    const body = data ? JSON.stringify(data) : undefined
-    const headers = data ? { 'Content-Type': 'application/json' } : {}
-
-    // 1. Direct local companion agent (fastest, 1.2s timeout)
-    try {
-      const directUrl = `http://127.0.0.1:8765/${cleanPath}`
-      const res = await fetch(directUrl, { method, headers, body, signal: AbortSignal.timeout(1200) })
-      if (res && res.ok) return res
-    } catch (_) {}
-
-    // 2. HTTPS agent proxy via backend (3s timeout)
-    try {
-      const url = apiUrl(`/api/v1/agent/${cleanPath}`, settings)
-      const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(3000) })
-      if (res && res.ok) return res
-    } catch (_) {}
-
-    return null
-  }
-
   async function ensureOnline() {
     if (sessionCode.value && device.deviceStatus.value === 'online' && signaling.isConnected.value) return true
     if (onlinePromise) return onlinePromise
@@ -147,7 +124,6 @@ function createHostSession() {
       }
 
       sessionCode.value = device.deviceId.value
-      hostToken = device.deviceToken.value
       statusText.value = `Device ID ${sessionCode.value} online.`
       startAgentPolling()
 
@@ -171,7 +147,8 @@ function createHostSession() {
       })
 
       signaling.onMessage(handleSignalingMessage)
-      signaling.onOpen(() => signaling.register('host', hostToken))
+      // Read the token on every (re)connect: re-registering the device can replace it
+      signaling.onOpen(() => signaling.register('host', device.deviceToken.value))
       signaling.onClose((event) => {
         if (sessionCode.value && event.code !== 1000 && event.code !== 1001) {
           state.value = 'registering'
@@ -856,7 +833,6 @@ function createHostSession() {
     stopAgentPolling()
     signaling.disconnect()
     sessionCode.value = ''
-    hostToken = ''
     state.value = 'idle'
     statusText.value = 'This desk is offline.'
   }

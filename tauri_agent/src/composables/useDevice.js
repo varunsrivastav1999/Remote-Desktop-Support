@@ -10,6 +10,9 @@ const LEGACY_NAME_KEY = 'anygravity_device_name'
 
 const deviceId = ref('')
 const deviceToken = ref('')
+// Companion agent credential (`agent.py --token`). The server derives it from the device token
+// and returns it on every registration, so it is never stored.
+const agentToken = ref('')
 const deviceName = ref('')
 const deviceStatus = ref('offline') // 'offline' | 'connecting' | 'online' | 'connected'
 const incomingRequest = ref(null) // { requestId, callerDeviceId, callerName }
@@ -65,6 +68,7 @@ function loadSavedCredentials() {
       storage.removeItem(DEVICE_TOKEN_KEY)
       deviceId.value = ''
       deviceToken.value = ''
+      agentToken.value = ''
     }
     storage.setItem('rs_tab_owner', currentTab)
   }
@@ -78,6 +82,7 @@ function loadSavedCredentials() {
   } else {
     deviceId.value = ''
     deviceToken.value = ''
+    agentToken.value = ''
     storage.removeItem(DEVICE_ID_KEY)
     storage.removeItem(LEGACY_ID_KEY)
     storage.removeItem(DEVICE_TOKEN_KEY)
@@ -86,10 +91,11 @@ function loadSavedCredentials() {
   deviceName.value = storage.getItem(DEVICE_NAME_KEY) || storage.getItem(LEGACY_NAME_KEY) || hostLabel()
 }
 
-function saveCredentials(id, token, name) {
+function saveCredentials(id, token, name, agentTok) {
   const storage = getDeviceStorage()
   deviceId.value = id
   deviceToken.value = token
+  agentToken.value = agentTok || ''
   if (name) deviceName.value = name
   storage.setItem(DEVICE_ID_KEY, id)
   storage.setItem(DEVICE_TOKEN_KEY, token)
@@ -131,7 +137,7 @@ async function registerDevice() {
 
       if (response.ok) {
         const data = await response.json()
-        saveCredentials(data.device_id, data.auth_token, data.name)
+        saveCredentials(data.device_id, data.auth_token, data.name, data.agent_token)
         deviceStatus.value = 'online'
         console.log(`[Remote Desktop] Registered as ${data.device_id} (${data.name})`)
 
@@ -149,6 +155,7 @@ async function registerDevice() {
         storage.removeItem(LEGACY_TOKEN_KEY)
         deviceId.value = ''
         deviceToken.value = ''
+        agentToken.value = ''
 
         // Retry immediately requesting a fresh permanent Device ID
         const retryRes = await fetch(endpoint, {
@@ -166,7 +173,7 @@ async function registerDevice() {
         })
         if (retryRes.ok) {
           const freshData = await retryRes.json()
-          saveCredentials(freshData.device_id, freshData.auth_token, freshData.name)
+          saveCredentials(freshData.device_id, freshData.auth_token, freshData.name, freshData.agent_token)
           deviceStatus.value = 'online'
           startHeartbeat()
           connectDevicePushWs()
@@ -474,6 +481,7 @@ async function resetDeviceId() {
   storage.removeItem(LEGACY_TOKEN_KEY)
   deviceId.value = ''
   deviceToken.value = ''
+  agentToken.value = ''
   handledRequestIds.clear()
   stopHeartbeat()
   if (deviceWs) {
@@ -509,6 +517,7 @@ export function useDevice() {
   return {
     deviceId: readonly(deviceId),
     deviceToken: readonly(deviceToken),
+    agentToken: readonly(agentToken),
     deviceName,
     deviceStatus: readonly(deviceStatus),
     incomingRequest: readonly(incomingRequest),

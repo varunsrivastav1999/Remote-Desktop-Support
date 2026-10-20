@@ -1,12 +1,15 @@
 import asyncio
 import json
+import os
 import urllib.request
 import websockets
 
-BASE_URL = "http://127.0.0.1:8000"
-WS_BASE = "ws://127.0.0.1:8000"
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+WS_BASE = BASE_URL.replace("http://", "ws://").replace("https://", "wss://")
 SESSION_CODE = "AG-TEST-CONTROL-88"
 NORM_ID = "AGTESTCONTROL88"
+# Fixed so reruns recover the same device instead of being refused
+DEVICE_TOKEN = "e2e-take-control-device-token"
 
 INPUT_EVENTS = [
     {"type": "mousemove", "x": 0.45, "y": 0.65},
@@ -49,8 +52,21 @@ async def wait_for(ws, predicate, timeout=3.0):
     raise AssertionError(f"Expected message not received. Saw: {seen}")
 
 
+def register_device(device_id, auth_token):
+    req = urllib.request.Request(
+        f"{BASE_URL}/api/v1/devices/register",
+        data=json.dumps({"device_id": device_id, "auth_token": auth_token, "name": "Laptop B"}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read().decode())
+
+
 async def test_full_take_control_pipeline():
     print("\n[TEST] 1. Registering Device and Companion Agent on Remote Laptop B...")
+    registration = register_device(SESSION_CODE, DEVICE_TOKEN)
+    assert registration["device_id"] == SESSION_CODE, registration
     agent_ws_url = f"{WS_BASE}/ws/agent/{SESSION_CODE}"
 
     received_events_on_remote_b = []
@@ -58,14 +74,10 @@ async def test_full_take_control_pipeline():
 
     async def run_fake_remote_agent_b():
         async with websockets.connect(agent_ws_url) as ws:
-            # Receive welcome
-            msg = await ws.recv()
-            welcome = json.loads(msg)
-            assert welcome.get("type") == "agent_connected"
-
-            # Send agent info for Laptop B
+            # Send agent info for Laptop B; it carries the agent token that authenticates it
             await ws.send(json.dumps({
                 "type": "agent_info",
+                "token": registration["agent_token"],
                 "device_id": SESSION_CODE,
                 "username": "remote_user_b",
                 "hostname": "laptop-b-system",
@@ -74,6 +86,8 @@ async def test_full_take_control_pipeline():
                 "ssh_running": True,
                 "has_input": True,
             }))
+            welcome = json.loads(await ws.recv())
+            assert welcome.get("type") == "agent_connected", welcome
             agent_connected_event.set()
 
             async for raw in ws:
@@ -122,7 +136,7 @@ async def test_full_take_control_pipeline():
     # 3. Host (browser host on Laptop B) and Controller Laptop A join the signaling room
     print("[TEST] 3. Host Laptop B and Controller Laptop A joining the Signaling Room...")
     host_ws = await websockets.connect(f"{WS_BASE}/ws/{SESSION_CODE}")
-    await host_ws.send(json.dumps({"type": "register", "role": "host", "host_token": "test"}))
+    await host_ws.send(json.dumps({"type": "register", "role": "host", "host_token": DEVICE_TOKEN}))
     await wait_for(host_ws, lambda m: m.get("type") == "registered")
 
     client_ws = await websockets.connect(f"{WS_BASE}/ws/{SESSION_CODE}")

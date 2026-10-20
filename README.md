@@ -32,12 +32,12 @@ The system is **100% self-contained, open-source, and free to use** with zero re
 ```text
 Remote Desktop Support Server Stack
 ┌────────────────────────────────────────────────────────────────────────┐
-│  FastAPI Backend (Async SQLAlchemy + Redis PubSub + Agent HTTPS Proxy) │
+│  FastAPI Backend (Async SQLAlchemy + Redis PubSub)                     │
 │  - Device Registry & Permanent AG-XXX-XXX-XXX ID Allocation            │
 │  - Presence & Heartbeat Engine (Redis TTL + DB Tracking)               │
 │  - Session Authorization & Unattended PIN Verification                 │
 │  - Push Notifications & WebRTC Signaling Dispatch                      │
-│  - HTTPS Agent Proxy (/api/v1/agent/*) for Browser Host OS Control     │
+│  - Authenticated Agent Channel (/ws/agent/*) for Browser Host Control  │
 │                                                                        │
 │  PostgreSQL (Persistent Storage)  │  Redis (Real-time Presence)        │
 │  Coturn (TURN/STUN Relay)         │  Nginx / Vite (Web App UI)         │
@@ -129,15 +129,18 @@ Remote Desktop Support supports two host modes:
 ### Mode A: Browser Host + Native Companion Agent (Recommended for Web Users)
 When sharing a screen through a web browser (Google Chrome, Microsoft Edge, Mozilla Firefox), run the lightweight companion daemon on the host computer to enable native OS mouse clicks, drag-and-drop, keyboard input, terminal commands, and file browsing.
 
-The web app displays a **1-Click Copy Command** directly on the **Share This Desk** screen with your Device ID pre-filled:
+The web app displays a **1-Click Copy Command** directly on the **Share This Desk** screen with your Device ID and agent token pre-filled (the token is masked on screen; the **Copy** button copies the full command):
 
 ```bash
 # 1-Click Universal Launch Command (Linux, macOS, Windows):
-curl -sSL https://webmaster-meal-classroom-colony.trycloudflare.com/agent.py | python3 - --device <YOUR_DEVICE_ID>
+curl -sSL https://webmaster-meal-classroom-colony.trycloudflare.com/agent.py | python3 - --device <YOUR_DEVICE_ID> --token <AGENT_TOKEN>
 
 # Or if you already have the repository cloned:
-python3 scripts/local_agent.py --device <YOUR_DEVICE_ID>
+python3 scripts/local_agent.py --device <YOUR_DEVICE_ID> --token <AGENT_TOKEN>
 ```
+
+- **Agent authentication:** The server accepts an agent for a Device ID only with that device's agent token, which `/api/v1/devices/register` returns as `agent_token`. The token is derived from the device token, so it changes whenever the device registers with a new token, and it cannot be used to register as the host. You can also pass it in the `AGENT_TOKEN` environment variable. An agent started without a valid token exits instead of connecting.
+- **No local ports:** The agent opens no listening sockets. Mouse, keyboard, terminal, and file requests reach it only through its authenticated server connection, and only the authenticated host can issue terminal and file requests.
 
 - **Outbound WebSocket Tunneling:** The companion agent connects via persistent outbound WebSocket directly to the signaling server (`wss://.../ws/agent/{device_id}`). This bypasses all browser Mixed Content and Private Network Access (PNA) restrictions, working seamlessly across firewalls and NAT.
 - **Linux (Ubuntu / Debian / Fedora / Arch):** Automatically detects and uses `pynput` or native `xdotool` (`sudo apt-get install -y xdotool`). Supports single clicks, right clicks, double clicks, dragging, scrolling, and keyboard shortcuts.

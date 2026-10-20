@@ -7,13 +7,15 @@ from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import redis.asyncio as redis
 
-from app.services.device_service import normalize_device_id
+from app.database import async_session_factory
+from app.services.device_service import normalize_device_id, verify_agent_token, verify_device_token
 from app.services.presence_service import set_device_online, set_device_offline
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["signaling"])
 
 PEER_TTL_SECONDS = 60
+AGENT_AUTH_TIMEOUT_SECONDS = 10
 SIGNAL_TYPES = {
     "offer": ("host", "client"),
     "answer": ("client", "host"),
@@ -112,6 +114,27 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
     raw_device_id = device_id.strip()
 
     await websocket.accept()
+
+    # The agent receives the controller's input and the host's terminal and file requests, so
+    # it must prove it belongs to this device before anything is routed to it. Its first
+    # message is agent_info carrying the agent token from /api/v1/devices/register.
+    try:
+        first = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=AGENT_AUTH_TIMEOUT_SECONDS))
+        agent_token = str(first.pop("token", "") or "") if isinstance(first, dict) else ""
+        async with async_session_factory() as db:
+            authenticated = await verify_agent_token(db, norm_device_id, agent_token)
+    except Exception as e:
+        logger.debug(f"Agent auth handshake failed for {norm_device_id}: {e}")
+        authenticated = False
+    if not authenticated:
+        logger.warning(f"Rejected unauthenticated companion agent for device: {norm_device_id}")
+        try:
+            await websocket.send_json({"type": "error", "message": "Agent authentication failed."})
+            await websocket.close(code=4401, reason="Invalid agent token")
+        except Exception:
+            pass
+        return
+
     agent_channel_norm = f"channel:agent:{norm_device_id}"
     agent_channel_raw = f"channel:agent:{raw_device_id}"
     pubsub = redis_client.pubsub()
@@ -155,41 +178,46 @@ async def agent_companion_endpoint(websocket: WebSocket, device_id: str) -> None
 
     task = asyncio.create_task(forward_to_agent())
 
-    try:
-        while True:
-            text = await websocket.receive_text()
-            data = json.loads(text)
-            msg_type = data.get("type")
+    async def handle_agent_message(data: dict) -> None:
+        msg_type = data.get("type")
 
-            if msg_type in ("ping", "heartbeat"):
-                await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
-                await websocket.send_json({"type": "pong"})
-            elif msg_type == "agent_info":
-                await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
-                flat_info = {}
-                for k, v in data.items():
-                    flat_info[k] = json.dumps(v) if isinstance(v, (list, dict, bool)) else str(v)
-                await redis_client.hset(f"device:{norm_device_id}:agent_info", mapping=flat_info)
-                # Agent traffic answers the host's requests; the controller never needs it.
-                session_payload = json.dumps({
-                    "connection_id": "agent",
-                    "sender_role": "agent",
-                    "target_role": "host",
-                    "data": {"type": "agent_info", **data},
-                })
-                await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
-                if raw_device_id != norm_device_id:
-                    await redis_client.publish(f"channel:session:{raw_device_id}", session_payload)
-            elif msg_type in ("reply", "control_granted", "control_released", "control_revoked"):
-                session_payload = json.dumps({
-                    "connection_id": "agent",
-                    "sender_role": "agent",
-                    "target_role": "host",
-                    "data": data,
-                })
-                await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
-                if raw_device_id != norm_device_id:
-                    await redis_client.publish(f"channel:session:{raw_device_id}", session_payload)
+        if msg_type in ("ping", "heartbeat"):
+            await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
+            await websocket.send_json({"type": "pong"})
+        elif msg_type == "agent_info":
+            # agent_info is readable via /system_info, so the credential must never be stored
+            data.pop("token", None)
+            await redis_client.set(f"device:{norm_device_id}:agent_online", "1", ex=60)
+            flat_info = {}
+            for k, v in data.items():
+                flat_info[k] = json.dumps(v) if isinstance(v, (list, dict, bool)) else str(v)
+            await redis_client.hset(f"device:{norm_device_id}:agent_info", mapping=flat_info)
+            # Agent traffic answers the host's requests; the controller never needs it.
+            session_payload = json.dumps({
+                "connection_id": "agent",
+                "sender_role": "agent",
+                "target_role": "host",
+                "data": {"type": "agent_info", **data},
+            })
+            await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
+            if raw_device_id != norm_device_id:
+                await redis_client.publish(f"channel:session:{raw_device_id}", session_payload)
+        elif msg_type in ("reply", "control_granted", "control_released", "control_revoked"):
+            session_payload = json.dumps({
+                "connection_id": "agent",
+                "sender_role": "agent",
+                "target_role": "host",
+                "data": data,
+            })
+            await redis_client.publish(f"channel:session:{norm_device_id}", session_payload)
+            if raw_device_id != norm_device_id:
+                await redis_client.publish(f"channel:session:{raw_device_id}", session_payload)
+
+    try:
+        # The handshake message is the agent's first agent_info
+        await handle_agent_message(first)
+        while True:
+            await handle_agent_message(json.loads(await websocket.receive_text()))
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -229,7 +257,6 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
         # Check if code is a registered Device ID or create a room for host
         is_dev = await redis_client.exists(f"device:{code}:presence") or await redis_client.exists(f"presence:device:{code}")
         if not is_dev:
-            from app.database import async_session_factory
             from app.models.device import Device
             from sqlalchemy import select
             try:
@@ -343,6 +370,23 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
         except Exception:
             logger.exception(f"Redis listener failed for session {code}")
 
+    async def verify_host_token(room: str, session_data: dict, token: str) -> bool:
+        if not token:
+            return False
+        expected_host = session_data.get("host_token", "")
+        if expected_host and secrets.compare_digest(expected_host, token):
+            return True
+        device_ids = {room, session_data.get("device_id") or room}
+        try:
+            async with async_session_factory() as db:
+                for device_id in device_ids:
+                    if await verify_device_token(db, device_id, token):
+                        await redis_client.hset(f"session:{room}", "host_token", token)
+                        return True
+        except Exception as auth_err:
+            logger.warning(f"DB credential verification failed for host {room}: {auth_err}")
+        return False
+
     listener_task = asyncio.create_task(listen_for_peer())
 
     peer_key = lambda r: f"session:{code}:peer:{r}"
@@ -372,37 +416,15 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
 
                 session_data = await redis_client.hgetall(f"session:{code}")
                 if requested_role == "host":
-                    token = data.get("host_token") or data.get("session_token") or ""
-                    expected_host = session_data.get("host_token", "")
-                    expected_session = session_data.get("session_token", "")
-                    valid = False
-                    if token and expected_host and secrets.compare_digest(expected_host, token):
-                        valid = True
-                    elif token and expected_session and secrets.compare_digest(expected_session, token):
-                        valid = True
-
-                    # Fallback: check device credentials directly in database
-                    if not valid and token:
-                        from app.database import async_session_factory
-                        from app.services.device_service import verify_device_token
-                        try:
-                            async with async_session_factory() as db:
-                                if await verify_device_token(db, code, token):
-                                    valid = True
-                                    await redis_client.hset(f"session:{code}", "host_token", token)
-                        except Exception as auth_err:
-                            logger.warning(f"DB credential verification failed for host {code}: {auth_err}")
-
-                    if not valid:
-                        # Allow host to authenticate if room matches its device code
-                        if code.startswith("AG-") or session_data.get("device_id") == code:
-                            valid = True
-                            if token:
-                                await redis_client.hset(f"session:{code}", "host_token", token)
-                        else:
-                            await send_error("Host authentication failed.")
-                            await websocket.close(code=4403, reason="Invalid host token")
-                            break
+                    # Only the device itself may host: it must present the room's host token
+                    # (set by device register/heartbeat or legacy session create) or a device
+                    # token that verifies against the database. The controller's session token
+                    # is not accepted.
+                    token = data.get("host_token") or ""
+                    if not await verify_host_token(code, session_data, token):
+                        await send_error("Host authentication failed.")
+                        await websocket.close(code=4403, reason="Invalid host token")
+                        break
                 else:
                     # requested_role == "client"
                     # Notify host via device push channel that a client is waiting in room

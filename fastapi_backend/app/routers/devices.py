@@ -15,6 +15,8 @@ from app.schemas.device import (
     HeartbeatResponse,
 )
 from app.services.device_service import (
+    DeviceCredentialError,
+    agent_token_for,
     get_device,
     normalize_device_id,
     register_or_recover_device,
@@ -72,11 +74,15 @@ async def register_device(
         return DeviceRegisterResponse(
             device_id=device.id,
             auth_token=auth_token,
+            agent_token=agent_token_for(device.id, auth_token),
             name=device.name,
             status="online",
             agent_version=device.agent_version,
             message="Device registered and online",
         )
+    except DeviceCredentialError as e:
+        # The client drops its stored ID and registers fresh on 400
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.exception("Failed to register device")
         raise HTTPException(status_code=500, detail=str(e))

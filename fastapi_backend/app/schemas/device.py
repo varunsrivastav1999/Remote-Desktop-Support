@@ -15,6 +15,8 @@ class DeviceRegisterRequest(BaseModel):
 class DeviceRegisterResponse(BaseModel):
     device_id: str
     auth_token: str
+    # Credential for the companion agent (`agent.py --token`); cannot be used to register as host
+    agent_token: str
     name: str
     status: str
     agent_version: str

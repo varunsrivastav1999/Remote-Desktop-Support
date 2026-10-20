@@ -3,9 +3,11 @@ import json
 import logging
 import uuid
 from typing import Optional
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from app.services.device_service import normalize_device_id
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.services.device_service import normalize_device_id, verify_device_token
 
 router = APIRouter(prefix="/api/v1/terminal", tags=["terminal"])
 logger = logging.getLogger("remote_support.terminal")
@@ -13,10 +15,16 @@ logger = logging.getLogger("remote_support.terminal")
 class TerminalExecRequest(BaseModel):
     command: str
     device_id: Optional[str] = None
+    # The target device's own token: only that device may run commands on itself this way
+    auth_token: Optional[str] = None
     cwd: Optional[str] = None
 
 @router.post("/exec")
-async def execute_terminal_command(payload: TerminalExecRequest, request: Request):
+async def execute_terminal_command(
+    payload: TerminalExecRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Executes a shell command on the target remote system via its companion agent.
     Never executes on the local server.
@@ -34,6 +42,8 @@ async def execute_terminal_command(payload: TerminalExecRequest, request: Reques
         }
 
     norm_id = normalize_device_id(device_id)
+    if not payload.auth_token or not await verify_device_token(db, norm_id, payload.auth_token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device credentials")
     redis_client = request.app.state.redis
 
     # Check if agent is online for this device

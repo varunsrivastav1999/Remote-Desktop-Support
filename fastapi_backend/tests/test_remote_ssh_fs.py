@@ -1,16 +1,23 @@
 import asyncio
 import json
+import os
 import websockets
 import httpx
 
-BASE_HTTP = "http://localhost:8000"
-BASE_WS = "ws://localhost:8000"
+BASE_HTTP = os.environ.get("BASE_URL", "http://localhost:8000")
+BASE_WS = BASE_HTTP.replace("http://", "ws://").replace("https://", "wss://")
+# Fixed so reruns recover the same device instead of being refused
+DEVICE_TOKEN = "remote-ssh-fs-device-token"
 
 async def test_system_info_and_agent_dispatch():
     device_id = "AG-816-555-726"
 
     print("--- [TEST 1] Testing /api/v1/terminal/exec security protection ---")
     async with httpx.AsyncClient(base_url=BASE_HTTP) as client:
+        res = await client.post("/api/v1/devices/register", json={"device_id": device_id, "auth_token": DEVICE_TOKEN})
+        assert res.status_code == 201, res.text
+        agent_token = res.json()["agent_token"]
+
         # Test 1a: Calling without device_id
         res = await client.post("/api/v1/terminal/exec", json={"command": "whoami"})
         data = res.json()
@@ -18,18 +25,18 @@ async def test_system_info_and_agent_dispatch():
         print("✓ Terminal endpoint correctly rejected execution without remote device_id!")
 
         # Test 1b: Calling with offline device_id
-        res = await client.post("/api/v1/terminal/exec", json={"command": "whoami", "device_id": "AG-999-999-999"})
+        res = await client.post("/api/v1/terminal/exec", json={"command": "whoami", "device_id": device_id, "auth_token": DEVICE_TOKEN})
         data = res.json()
-        assert "Remote companion agent for AG-999-999-999 is offline" in data["stderr"], f"Failed: {data}"
+        assert f"Remote companion agent for {device_id} is offline" in data["stderr"], f"Failed: {data}"
         print("✓ Terminal endpoint correctly rejected execution when remote agent offline!")
 
     print("\n--- [TEST 2] Testing Companion Agent Connect & System Metadata ---")
     agent_ws_url = f"{BASE_WS}/ws/agent/{device_id}"
     async with websockets.connect(agent_ws_url) as agent_ws:
-        init_greeting = await agent_ws.recv()
-        # Send agent_info
+        # Send agent_info, authenticated with the agent token
         await agent_ws.send(json.dumps({
             "type": "agent_info",
+            "token": agent_token,
             "device_id": device_id,
             "username": "remote_ubuntu",
             "hostname": "remote-laptop",
@@ -42,6 +49,8 @@ async def test_system_info_and_agent_dispatch():
             "ssh_running": True,
             "has_input": True,
         }))
+        init_greeting = json.loads(await agent_ws.recv())
+        assert init_greeting["type"] == "agent_connected", init_greeting
         await asyncio.sleep(0.2)
 
         # Check /api/v1/devices/{device_id}/system_info
@@ -75,7 +84,7 @@ async def test_system_info_and_agent_dispatch():
         listener_task = asyncio.create_task(mock_agent_listener())
 
         async with httpx.AsyncClient(base_url=BASE_HTTP) as client:
-            res = await client.post("/api/v1/terminal/exec", json={"command": "whoami", "device_id": device_id})
+            res = await client.post("/api/v1/terminal/exec", json={"command": "whoami", "device_id": device_id, "auth_token": DEVICE_TOKEN})
             result = res.json()
             assert result["stdout"] == "remote_ubuntu\n"
             print("✓ Remote command dispatched and executed on target remote machine via agent!")

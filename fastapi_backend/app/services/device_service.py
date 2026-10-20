@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -16,6 +17,10 @@ from app.models.device import Device, DeviceCredential
 from app.schemas.device import DeviceRegisterRequest
 
 logger = logging.getLogger(__name__)
+
+
+class DeviceCredentialError(Exception):
+    """Raised when an existing Device ID is claimed without its current token."""
 
 
 def hash_token(token: str) -> str:
@@ -121,6 +126,14 @@ async def register_or_recover_device(
         )
         credential = cred_res.scalar_one_or_none()
 
+        # Recovering an existing Device ID requires its current token; otherwise anyone who
+        # knew the ID could replace the credential and then pass every token check.
+        if credential and not (
+            request.auth_token
+            and secrets.compare_digest(credential.auth_token_hash, hash_token(request.auth_token))
+        ):
+            raise DeviceCredentialError("Device ID is registered with different credentials.")
+
         raw_token = request.auth_token or secrets.token_urlsafe(32)
         if not credential:
             credential = DeviceCredential(
@@ -208,6 +221,37 @@ async def verify_device_token(db: AsyncSession, device_id: str, auth_token: str)
     if not credential:
         return False
     return secrets.compare_digest(credential.auth_token_hash, hash_token(auth_token))
+
+
+def derive_agent_token(auth_token_hash: str, device_id: str) -> str:
+    """Token the companion agent presents on /ws/agent.
+
+    It is derived from the device token's hash, so it changes whenever the device token does,
+    and holding it does not let anyone register as the host.
+    """
+    return hmac.new(
+        auth_token_hash.encode("utf-8"),
+        f"agent:{normalize_device_id(device_id)}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def agent_token_for(device_id: str, auth_token: str) -> str:
+    return derive_agent_token(hash_token(auth_token), device_id)
+
+
+async def verify_agent_token(db: AsyncSession, device_id: str, agent_token: str) -> bool:
+    """Verify the token a companion agent presents for the given device."""
+    if not agent_token:
+        return False
+    normalized = normalize_device_id(device_id)
+    cred_res = await db.execute(
+        select(DeviceCredential).where(DeviceCredential.device_id == normalized)
+    )
+    credential = cred_res.scalar_one_or_none()
+    if not credential:
+        return False
+    return secrets.compare_digest(derive_agent_token(credential.auth_token_hash, normalized), agent_token)
 
 
 async def get_device(db: AsyncSession, device_id: str) -> Optional[Device]:

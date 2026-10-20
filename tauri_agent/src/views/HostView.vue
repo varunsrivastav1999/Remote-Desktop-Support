@@ -117,15 +117,17 @@ const statusDot = computed(() => {
 })
 
 const copiedCmd = ref(false)
-const agentCommand = computed(() => {
+function buildAgentCommand(token) {
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
   const code = session.sessionCode.value || ''
-  return `curl -sSL ${origin}/agent.py | python3 - --device ${code}`
-})
+  return `curl -sSL ${origin}/agent.py | python3 - --device ${code} --token ${token}`
+}
+// The screen may be shared with the controller, so only the copied command holds the token
+const agentCommand = computed(() => buildAgentCommand('••••••••'))
 
 function copyAgentCommand() {
   if (navigator.clipboard) {
-    navigator.clipboard.writeText(agentCommand.value)
+    navigator.clipboard.writeText(buildAgentCommand(device.agentToken.value))
     copiedCmd.value = true
     setTimeout(() => { copiedCmd.value = false }, 2500)
   }

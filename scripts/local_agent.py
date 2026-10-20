@@ -3,9 +3,12 @@
 Remote Desktop Support — Native Host Companion Agent
 Provides native OS mouse, keyboard, terminal, and filesystem control across Linux, macOS, and Windows.
 Supports:
-  1. Direct Outbound WebSocket connection to Signaling Server (/ws/agent/{device_id})
-  2. Local HTTP Server on http://127.0.0.1:8765 with Private Network Access CORS
-  3. Native input injection via pynput, Quartz (macOS), Win32 (Windows), and xdotool (Linux)
+  1. Direct Outbound WebSocket connection to Signaling Server (/ws/agent/{device_id}),
+     authenticated with the agent token shown on the Host screen (--token)
+  2. Native input injection via pynput, Quartz (macOS), Win32 (Windows), and xdotool (Linux)
+
+The agent opens no listening ports: every request reaches it through its authenticated
+server connection.
 """
 
 import sys
@@ -15,11 +18,8 @@ import base64
 import shutil
 import argparse
 import asyncio
-import threading
 import subprocess
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
-PORT = 8765
 DEFAULT_SERVER = "https://webmaster-meal-classroom-colony.trycloudflare.com"
 
 # ═════════════════════════════════════════════════════════════
@@ -473,90 +473,6 @@ def execute_fs_mkdir(data):
 
 
 # ═════════════════════════════════════════════════════════════
-# Local HTTP Server (Handles Local Mixed-Content / LAN)
-# ═════════════════════════════════════════════════════════════
-
-class CompanionHandler(BaseHTTPRequestHandler):
-    def _send_cors(self, status=200, content_type="application/json"):
-        self.send_response(status)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Allow-Private-Network", "true")
-        self.send_header("Content-Type", content_type)
-        self.end_headers()
-
-    def do_OPTIONS(self):
-        self._send_cors(204)
-
-    def do_GET(self):
-        if self.path == "/health":
-            self._send_cors(200)
-            payload = {
-                "status": "ok",
-                "has_native_input": HAS_PYNPUT or HAS_XDOTOOL,
-                "screen_width": SCREEN_WIDTH,
-                "screen_height": SCREEN_HEIGHT,
-                "platform": sys.platform,
-            }
-            self.wfile.write(json.dumps(payload).encode("utf-8"))
-        elif self.path == "/fs/home":
-            res = execute_fs_home()
-            self._send_cors(200)
-            self.wfile.write(json.dumps(res).encode("utf-8"))
-        else:
-            self._send_cors(404)
-            self.wfile.write(b'{"error": "not found"}')
-
-    def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
-        try:
-            data = json.loads(body)
-        except Exception:
-            data = {}
-
-        path = self.path.rstrip("/")
-        if path == "/mouse":
-            res = execute_mouse(data)
-        elif path == "/key":
-            res = execute_key(data)
-        elif path in ("/control", "/release_control", "/release_all"):
-            res = release_all_inputs()
-        elif path == "/terminal":
-            res = execute_terminal(data)
-        elif path == "/fs/home":
-            res = execute_fs_home(data)
-        elif path == "/fs/list":
-            res = execute_fs_list(data)
-        elif path == "/fs/read_chunk":
-            res = execute_fs_read_chunk(data)
-        elif path == "/fs/write_chunk":
-            res = execute_fs_write_chunk(data)
-        elif path == "/fs/delete":
-            res = execute_fs_delete(data)
-        elif path == "/fs/mkdir":
-            res = execute_fs_mkdir(data)
-        else:
-            self._send_cors(404)
-            self.wfile.write(b'{"error": "not found"}')
-            return
-
-        self._send_cors(200)
-        self.wfile.write(json.dumps(res).encode("utf-8"))
-
-    def log_message(self, format, *args):
-        return
-
-def start_http_server():
-    try:
-        server = HTTPServer(("127.0.0.1", PORT), CompanionHandler)
-        server.serve_forever()
-    except Exception as e:
-        print(f"[Companion HTTP Warning] Could not bind 127.0.0.1:{PORT}: {e}")
-
-
-# ═════════════════════════════════════════════════════════════
 # Outbound WebSocket Agent (Connects to Server for Device ID)
 # ═════════════════════════════════════════════════════════════
 
@@ -599,7 +515,11 @@ def get_system_metadata(device_id):
     }
 
 
-async def run_websocket_client(server_url, device_id):
+# Close code the server uses when the agent token is wrong for this Device ID
+AUTH_FAILED_CLOSE_CODE = 4401
+
+
+async def run_websocket_client(server_url, device_id, token):
     import websockets
 
     # Format ws:// or wss:// URL
@@ -616,7 +536,8 @@ async def run_websocket_client(server_url, device_id):
         try:
             async with websockets.connect(target, ping_interval=20, ping_timeout=15) as ws:
                 meta = get_system_metadata(device_id)
-                await ws.send(json.dumps(meta))
+                # The first message authenticates this agent for the Device ID
+                await ws.send(json.dumps({**meta, "token": token}))
 
                 print("=" * 65)
                 print(f" 🟢 NATIVE AGENT CONNECTED AND ACTIVE FOR DEVICE {device_id}!")
@@ -686,6 +607,12 @@ async def run_websocket_client(server_url, device_id):
                         print(f"[Agent Error] {parse_err}")
 
         except Exception as conn_err:
+            close_frame = getattr(conn_err, "rcvd", None)
+            if close_frame is not None and close_frame.code == AUTH_FAILED_CLOSE_CODE:
+                # Retrying with the same token cannot succeed
+                print(f"[!] The server rejected the agent token for {device_id}.")
+                print("    Copy the current command from the Host screen and run it again.")
+                return
             print(f"[!] Server connection interrupted: {conn_err}. Reconnecting in {reconnect_delay}s...")
             reconnect_wait = reconnect_delay
             reconnect_delay = min(reconnect_delay * 2, 20)
@@ -702,7 +629,18 @@ async def run_websocket_client(server_url, device_id):
 # Main Entry Point
 # ═════════════════════════════════════════════════════════════
 
-def get_or_generate_device_id(custom_id=None):
+def prompt_value(label):
+    """Ask on the terminal when one is attached (not when the script is piped into python3)."""
+    if not sys.stdin.isatty():
+        return ""
+    try:
+        return input(f"\nEnter the {label} shown on the Host screen: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nExiting.")
+        sys.exit(0)
+
+
+def get_device_id(custom_id=None):
     if custom_id:
         return custom_id.strip()
     env_id = os.environ.get("DEVICE_ID")
@@ -719,56 +657,41 @@ def get_or_generate_device_id(custom_id=None):
         except Exception:
             pass
 
-    if sys.stdin.isatty():
-        try:
-            val = input("\nEnter your Device ID shown on the Host screen (e.g. AG-XXX-XXX-XXX) [or Enter for auto]: ").strip()
-            if val:
-                return val
-        except (KeyboardInterrupt, EOFError):
-            print("\nExiting.")
-            sys.exit(0)
+    return prompt_value("Device ID (e.g. AG-XXX-XXX-XXX)")
 
-    # Auto-generate persistent device ID
-    import random
-    n = f"{random.randint(100, 999)}-{random.randint(100, 999)}-{random.randint(100, 999)}"
-    gen_id = f"AG-{n}"
-    try:
-        with open(id_file, "w") as f:
-            f.write(gen_id)
-    except Exception:
-        pass
-    print(f"[*] Generated persistent Device ID: {gen_id}")
-    return gen_id
+
+def get_agent_token(custom_token=None):
+    if custom_token:
+        return custom_token.strip()
+    env_token = os.environ.get("AGENT_TOKEN")
+    if env_token:
+        return env_token.strip()
+    return prompt_value("agent token")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Remote Desktop Support Native Host Companion Agent")
     parser.add_argument("--device", "-d", help="Your Device ID (e.g. AG-816-555-726) shown on screen")
+    parser.add_argument("--token", "-t", help="Agent token shown on the Host screen (or set AGENT_TOKEN)")
     parser.add_argument("--server", "-s", default=DEFAULT_SERVER, help="Signaling Server URL")
     args = parser.parse_args()
 
-    # Always start local HTTP server in background thread
-    t = threading.Thread(target=start_http_server, daemon=True)
-    t.start()
+    device_id = get_device_id(args.device)
+    token = get_agent_token(args.token)
+    if not device_id or not token:
+        print("[!] A Device ID and agent token are required. Copy the full command from the Host screen:")
+        print("    curl -sSL <server>/agent.py | python3 - --device AG-XXX-XXX-XXX --token <agent token>")
+        sys.exit(2)
 
-    device_id = get_or_generate_device_id(args.device)
+    # Normalize Device ID
+    device_id = device_id.replace(" ", "-").upper()
+    if not device_id.startswith("AG-"):
+        device_id = f"AG-{device_id}"
 
-    if device_id:
-        # Normalize Device ID
-        device_id = device_id.replace(" ", "-").upper()
-        if not device_id.startswith("AG-"):
-            device_id = f"AG-{device_id}"
-
-        try:
-            asyncio.run(run_websocket_client(args.server, device_id))
-        except KeyboardInterrupt:
-            print("\nStopping Native Companion Agent...")
-    else:
-        print("[*] Running in standalone local HTTP mode on 127.0.0.1:8765...")
-        try:
-            t.join()
-        except KeyboardInterrupt:
-            print("\nStopping Native Companion Agent...")
+    try:
+        asyncio.run(run_websocket_client(args.server, device_id, token))
+    except KeyboardInterrupt:
+        print("\nStopping Native Companion Agent...")
 
 if __name__ == "__main__":
     main()
