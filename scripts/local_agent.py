@@ -528,6 +528,7 @@ async def run_websocket_client(server_url, device_id, token):
 
     print(f"[*] Connecting to Remote Support Server: {target}")
     reconnect_delay = 1
+    unreachable_count = 0
 
     while True:
         # Input is injected only between take_control and release_control, which the server
@@ -561,6 +562,7 @@ async def run_websocket_client(server_url, device_id, token):
                             print(" • Full OS mouse, keyboard, terminal, and file transfer enabled.")
                             print("=" * 65)
                             reconnect_delay = 1
+                            unreachable_count = 0
                         elif mtype == "take_control":
                             control_active = True
                             await ws.send(json.dumps({"type": "reply", "reply_to": "take_control", "req_id": req_id, "status": "granted"}))
@@ -615,6 +617,12 @@ async def run_websocket_client(server_url, device_id, token):
                 print("    Copy the current command from the Host screen and run it again.")
                 return
             print(f"[!] Server connection interrupted: {conn_err}. Reconnecting in {reconnect_delay}s...")
+            if isinstance(conn_err, OSError):
+                unreachable_count += 1
+                # Quick-tunnel addresses change when the tunnel restarts, so a saved one can go stale
+                if unreachable_count in (1, 10) or unreachable_count % 60 == 0:
+                    print(f"[!] Cannot reach the server at {server_url}. If the Host page now shows a different")
+                    print("    address, copy the command from the Host page and run it again.")
             reconnect_wait = reconnect_delay
             reconnect_delay = min(reconnect_delay * 2, 20)
         else:
