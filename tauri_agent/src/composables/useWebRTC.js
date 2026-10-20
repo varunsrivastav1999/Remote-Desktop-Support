@@ -51,6 +51,9 @@ export function useWebRTC(signaling) {
 
   // ─── System Info (from host) ─────────────────────────────
   const hostInfo = ref(null)
+  // Issued by the server once the host approves this controller; authorizes the device's
+  // system_info and SSH bridge for as long as this signaling connection lasts
+  const viewerToken = ref('')
 
   // ─── Connection Stats ────────────────────────────────────
   const stats = reactive({
@@ -203,6 +206,8 @@ export function useWebRTC(signaling) {
           } else {
             iceCandidateQueue.push(msg.candidate)
           }
+        } else if (msg.type === 'session_credential') {
+          viewerToken.value = msg.viewer_token || ''
         } else if (msg.type === 'waiting_for_host') {
           console.log('[WebRTC] Signaling room ready, waiting for remote host to start stream...')
           connectionState.value = 'connecting'
@@ -680,6 +685,7 @@ export function useWebRTC(signaling) {
       peerConnection.value = null
     }
     remoteStream.value = null
+    viewerToken.value = ''
     connectionState.value = 'disconnected'
     dataChannelState.value = 'closed'
     resetControlState()
@@ -694,6 +700,7 @@ export function useWebRTC(signaling) {
     authRequired: readonly(authRequired),
     authFailed: readonly(authFailed),
     hostInfo: readonly(hostInfo),
+    viewerToken: readonly(viewerToken),
     stats,
     chatMessages,
     unreadCount,

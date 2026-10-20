@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.device import Device, DeviceCredential
 from app.models.session import ConnectionRequest, DeviceSession
-from app.services.device_service import normalize_device_id, verify_password
+from app.services.device_service import normalize_device_id, verify_device_token, verify_password
 from app.services.presence_service import is_device_online
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,55 @@ def device_channel(device_id: str) -> str:
 
 def session_channel(session_code: str) -> str:
     return f"channel:session:{session_code}"
+
+
+# ─── Viewer tokens ────────────────────────────────────────────────────────────
+# The controller never holds the device token. When the host approves it (by sending the
+# WebRTC offer) the signaling server issues a viewer token to that one client connection.
+# It is valid only while that connection is the room's registered client, so it dies when the
+# controller disconnects, the host leaves, or another controller takes the room.
+
+def viewer_key(device_id: str) -> str:
+    return f"session:{device_id}:viewer"
+
+
+async def issue_viewer_token(redis_client: redis.Redis, room: str, device_id: str, connection_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    await redis_client.hset(viewer_key(device_id), mapping={
+        "token": token,
+        "connection_id": connection_id,
+        "room": room,
+    })
+    await redis_client.expire(viewer_key(device_id), 86400)
+    return token
+
+
+async def revoke_viewer_token(redis_client: redis.Redis, device_id: str, connection_id: Optional[str] = None) -> None:
+    """Revoke the device's viewer token (only if it belongs to `connection_id`, when given)."""
+    if connection_id and await redis_client.hget(viewer_key(device_id), "connection_id") != connection_id:
+        return
+    await redis_client.delete(viewer_key(device_id))
+
+
+async def verify_viewer_token(redis_client: redis.Redis, device_id: str, token: str) -> bool:
+    if not token:
+        return False
+    viewer = await redis_client.hgetall(viewer_key(normalize_device_id(device_id)))
+    if not viewer.get("token") or not secrets.compare_digest(viewer["token"], token):
+        return False
+    current_client = await redis_client.get(f"session:{viewer.get('room')}:peer:client")
+    return bool(current_client) and current_client == viewer.get("connection_id")
+
+
+async def verify_device_or_viewer_token(
+    db: AsyncSession, redis_client: redis.Redis, device_id: str, token: str
+) -> bool:
+    """Allow the device itself (device token) or the controller of its approved session."""
+    if not token:
+        return False
+    if await verify_viewer_token(redis_client, device_id, token):
+        return True
+    return await verify_device_token(db, device_id, token)
 
 
 async def create_connection_request(

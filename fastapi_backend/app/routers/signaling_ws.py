@@ -10,6 +10,7 @@ import redis.asyncio as redis
 from app.database import async_session_factory
 from app.services.device_service import normalize_device_id, verify_agent_token, verify_device_token
 from app.services.presence_service import set_device_online, set_device_offline
+from app.services.session_service import issue_viewer_token, revoke_viewer_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["signaling"])
@@ -46,6 +47,27 @@ async def device_notification_endpoint(websocket: WebSocket, device_id: str) -> 
     norm_device_id = normalize_device_id(device_id)
 
     await websocket.accept()
+
+    # This channel delivers connection requests (with their request ids) and marks the device
+    # online, so only the device itself may open it. Its first message carries the device token.
+    try:
+        first = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=AGENT_AUTH_TIMEOUT_SECONDS))
+        token = str(first.get("token", "") or "") if isinstance(first, dict) and first.get("type") == "auth" else ""
+        async with async_session_factory() as db:
+            authenticated = bool(token) and await verify_device_token(db, norm_device_id, token)
+    except Exception as e:
+        logger.debug(f"Device push auth handshake failed for {norm_device_id}: {e}")
+        authenticated = False
+    if not authenticated:
+        logger.warning(f"Rejected unauthenticated push channel for device: {norm_device_id}")
+        try:
+            await websocket.send_json({"type": "error", "message": "Device authentication failed."})
+            await websocket.close(code=4401, reason="Invalid device token")
+        except Exception:
+            pass
+        return
+    await websocket.send_json({"type": "authenticated", "device_id": norm_device_id})
+
     channel_name = f"channel:device:{norm_device_id}"
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(channel_name)
@@ -360,6 +382,8 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     payload = json.loads(message["data"])
                     if payload.get("connection_id") == connection_id:
                         continue
+                    if payload.get("target_connection") not in (None, connection_id):
+                        continue
                     if role and payload.get("target_role") in (None, role):
                         msg_to_send = payload.get("data") if (isinstance(payload, dict) and "data" in payload) else payload
                         await websocket.send_json(msg_to_send)
@@ -459,6 +483,8 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 )
 
                 if requested_role == "client":
+                    # A new controller must be approved again before it can read device metadata
+                    await revoke_viewer_token(redis_client, norm_code)
                     holder = await redis_client.get(control_key)
                     if holder and holder != connection_id:
                         # Control belongs to a previous controller connection; the new one must ask again
@@ -520,6 +546,19 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
             elif message_type in SIGNAL_TYPES and SIGNAL_TYPES[message_type][0] == role:
                 target_role = SIGNAL_TYPES[message_type][1]
                 if role == "host" and message_type == "offer":
+                    # The host sends its offer only once it has approved the waiting controller,
+                    # so that controller connection now gets a viewer token for the device's
+                    # metadata and SSH bridge. It is delivered to that connection alone.
+                    client_connection = await redis_client.get(peer_key("client"))
+                    if client_connection:
+                        viewer_token = await issue_viewer_token(redis_client, code, norm_code, client_connection)
+                        await redis_client.publish(channel_name, json.dumps({
+                            "connection_id": connection_id,
+                            "sender_role": "host",
+                            "target_role": "client",
+                            "target_connection": client_connection,
+                            "data": {"type": "session_credential", "viewer_token": viewer_token},
+                        }))
                     await redis_client.delete(f"device:{code}:pending_request")
                     await redis_client.delete(f"session:{code}:pending_request")
                     await redis_client.delete(f"device:{norm_code}:pending_request")
@@ -571,6 +610,9 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
             if stored_connection == connection_id:
                 if role == "host":
                     await end_control()
+                    await revoke_viewer_token(redis_client, norm_code)
+                else:
+                    await revoke_viewer_token(redis_client, norm_code, connection_id)
                 await redis_client.delete(peer_key(role))
                 other_role = "client" if role == "host" else "host"
                 await publish_event(

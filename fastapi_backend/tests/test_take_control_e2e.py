@@ -118,7 +118,8 @@ async def test_full_take_control_pipeline():
 
     # 2. Check system info endpoint from Controller
     print("[TEST] 2. Controller Laptop A verifying remote device info...")
-    req = urllib.request.Request(f"{BASE_URL}/api/v1/devices/{SESSION_CODE}/system_info")
+    req = urllib.request.Request(f"{BASE_URL}/api/v1/devices/{SESSION_CODE}/system_info",
+                                 headers={"Authorization": f"Bearer {DEVICE_TOKEN}"})
     with urllib.request.urlopen(req) as resp:
         assert resp.status == 200
         data = json.loads(resp.read().decode())
@@ -224,6 +225,7 @@ async def test_full_take_control_pipeline():
     print("[TEST] 9. Verifying SSH loopback rejection...")
     ssh_url = f"{WS_BASE}/ws/ssh/{SESSION_CODE}"
     async with websockets.connect(ssh_url) as ssh_ws:
+        await ssh_ws.send(json.dumps({"type": "auth", "token": DEVICE_TOKEN}))
         init_info = json.loads(await ssh_ws.recv())
         assert init_info.get("type") == "target_info"
         assert init_info.get("is_remote") is True

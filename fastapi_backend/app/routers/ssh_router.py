@@ -4,10 +4,14 @@ import logging
 import threading
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from app.database import async_session_factory
 from app.services.device_service import normalize_device_id
+from app.services.session_service import verify_device_or_viewer_token
 
 router = APIRouter(tags=["ssh"])
 logger = logging.getLogger("remote_support.ssh")
+
+AUTH_TIMEOUT_SECONDS = 10
 
 try:
     import paramiko
@@ -21,10 +25,31 @@ async def ssh_websocket_endpoint(websocket: WebSocket, device_id: str):
     """
     Direct interactive SSH session bridged over WebSocket to the remote connected laptop.
     Ensures SSH always connects to the remote device, never the local client.
+
+    The bridge reveals the device's username and LAN IPs and opens connections from this server,
+    so the first message must be {"type": "auth", "token": ...} with the device token or the
+    viewer token of the device's approved session.
     """
     await websocket.accept()
     norm_id = normalize_device_id(device_id)
     redis_client = websocket.app.state.redis
+
+    try:
+        first = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=AUTH_TIMEOUT_SECONDS))
+        token = str(first.get("token", "") or "") if isinstance(first, dict) and first.get("type") == "auth" else ""
+        async with async_session_factory() as db:
+            authenticated = await verify_device_or_viewer_token(db, redis_client, norm_id, token)
+    except Exception as e:
+        logger.debug(f"SSH auth handshake failed for {norm_id}: {e}")
+        authenticated = False
+    if not authenticated:
+        logger.warning(f"Rejected unauthenticated SSH bridge for device: {norm_id}")
+        try:
+            await websocket.send_json({"type": "error", "message": "Not authorized for this device."})
+            await websocket.close(code=4401, reason="Invalid token")
+        except Exception:
+            pass
+        return
 
     # Auto-detect remote device IP and system info
     raw_info = await redis_client.hgetall(f"device:{norm_id}:agent_info")

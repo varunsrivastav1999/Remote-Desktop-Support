@@ -249,7 +249,7 @@ let deviceWsPingInterval = null
  * WebSocket for real-time incoming connection requests: /ws/device/{device_id}
  */
 function connectDevicePushWs() {
-  if (!deviceId.value) return
+  if (!deviceId.value || !deviceToken.value) return
   if (deviceWs && (deviceWs.readyState === WebSocket.OPEN || deviceWs.readyState === WebSocket.CONNECTING)) {
     return
   }
@@ -284,6 +284,8 @@ function connectDevicePushWs() {
 
   deviceWs.onopen = () => {
     console.log(`[Remote Desktop] Connected to device push channel: ${deviceId.value}`)
+    // The server delivers nothing until the device proves it owns this ID
+    deviceWs.send(JSON.stringify({ type: 'auth', token: deviceToken.value }))
     wsReconnectAttempts = 0
     clearInterval(deviceWsPingInterval)
     deviceWsPingInterval = setInterval(() => {
@@ -308,7 +310,8 @@ function connectDevicePushWs() {
     clearInterval(deviceWsPingInterval)
     console.log(`[Remote Desktop] Device push channel disconnected (code=${event.code})`)
     deviceWs = null
-    if (event.code !== 1000) {
+    // 4401: token rejected. The heartbeat re-registers and reconnects, so don't retry blindly.
+    if (event.code !== 1000 && event.code !== 4401) {
       scheduleWsReconnect()
     }
   }
@@ -414,6 +417,7 @@ async function clearBackendPendingRequest() {
     await fetch(apiUrl(`/api/v1/devices/${deviceId.value}/clear-pending`, settings), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auth_token: deviceToken.value }),
     })
   } catch (_) {}
 }

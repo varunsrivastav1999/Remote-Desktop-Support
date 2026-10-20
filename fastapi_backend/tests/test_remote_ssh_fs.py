@@ -55,7 +55,8 @@ async def test_system_info_and_agent_dispatch():
 
         # Check /api/v1/devices/{device_id}/system_info
         async with httpx.AsyncClient(base_url=BASE_HTTP) as client:
-            res = await client.get(f"/api/v1/devices/{device_id}/system_info")
+            res = await client.get(f"/api/v1/devices/{device_id}/system_info",
+                                   headers={"Authorization": f"Bearer {DEVICE_TOKEN}"})
             info_data = res.json()
             assert info_data["agent_online"] is True
             assert info_data["info"]["username"] == "remote_ubuntu"
@@ -94,6 +95,7 @@ async def test_system_info_and_agent_dispatch():
     print("\n--- [TEST 4] Testing SSH WebSocket target association ---")
     ssh_ws_url = f"{BASE_WS}/ws/ssh/{device_id}"
     async with websockets.connect(ssh_ws_url) as ssh_ws:
+        await ssh_ws.send(json.dumps({"type": "auth", "token": DEVICE_TOKEN}))
         greeting = await ssh_ws.recv()
         greeting_data = json.loads(greeting)
         assert greeting_data["type"] == "target_info"

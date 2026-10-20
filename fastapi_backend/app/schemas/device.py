@@ -23,6 +23,10 @@ class DeviceRegisterResponse(BaseModel):
     message: str = "Device registered successfully"
 
 
+class DeviceTokenRequest(BaseModel):
+    auth_token: str = Field("", max_length=128)
+
+
 class HeartbeatRequest(BaseModel):
     device_id: str = Field(..., max_length=32)
     auth_token: str = Field(..., max_length=128)

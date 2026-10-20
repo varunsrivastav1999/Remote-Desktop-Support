@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 import redis.asyncio as redis
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from app.schemas.device import (
     DeviceRegisterRequest,
     DeviceRegisterResponse,
     DeviceResponse,
+    DeviceTokenRequest,
     HeartbeatRequest,
     HeartbeatResponse,
 )
@@ -27,6 +29,7 @@ from app.services.presence_service import (
     resolve_device_status,
 )
 from app.services.audit_service import log_audit_event
+from app.services.session_service import verify_device_or_viewer_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
@@ -34,6 +37,22 @@ router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
 def get_redis(request: Request) -> redis.Redis:
     return request.app.state.redis
+
+
+def bearer_token(authorization: Optional[str] = Header(None)) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+async def read_agent_info(redis_client: redis.Redis, device_id: str) -> dict:
+    raw_info = await redis_client.hgetall(f"device:{device_id}:agent_info")
+    info = {}
+    for k, v in (raw_info or {}).items():
+        try:
+            info[k] = json.loads(v)
+        except ValueError:
+            info[k] = v
+    return info
 
 
 @router.post("/register", response_model=DeviceRegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -119,7 +138,6 @@ async def device_heartbeat(
     )
     await redis_client.expire(f"session:{norm_id}", 86400)
 
-    import json
     pending_payload = None
     pending_raw = await redis_client.get(f"device:{norm_id}:pending_request")
     if pending_raw:
@@ -144,11 +162,16 @@ async def device_heartbeat(
 async def clear_device_pending(
     device_id: str,
     request: Request,
+    payload: Optional[DeviceTokenRequest] = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    Clear pending connection requests for a device from Redis.
+    Clear pending connection requests for a device from Redis. Only the device itself may do
+    this; otherwise anyone could silently drop a controller's request before the host sees it.
     """
     norm_id = normalize_device_id(device_id)
+    if not payload or not payload.auth_token or not await verify_device_token(db, norm_id, payload.auth_token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device credentials")
     redis_client = get_redis(request)
     await redis_client.delete(f"device:{norm_id}:pending_request")
     await redis_client.delete(f"session:{norm_id}:pending_request")
@@ -233,17 +256,22 @@ async def list_devices(
 
 
 @router.get("/{device_id}/system_info")
-async def get_device_system_info(device_id: str, request: Request):
+async def get_device_system_info(
+    device_id: str,
+    request: Request,
+    token: str = Depends(bearer_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    The agent's system info (username, hostname, LAN IPs). Readable by the device itself or by
+    the controller of its approved session (Authorization: Bearer <device or viewer token>).
+    """
     norm_id = normalize_device_id(device_id)
     redis_client = get_redis(request)
-    raw_info = await redis_client.hgetall(f"device:{norm_id}:agent_info")
+    if not await verify_device_or_viewer_token(db, redis_client, norm_id, token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authorized for this device")
+    info = await read_agent_info(redis_client, norm_id)
     agent_online = await redis_client.exists(f"device:{norm_id}:agent_online")
-    info = {}
-    for k, v in (raw_info or {}).items():
-        try:
-            info[k] = json.loads(v)
-        except Exception:
-            info[k] = v
 
     return {
         "device_id": norm_id,

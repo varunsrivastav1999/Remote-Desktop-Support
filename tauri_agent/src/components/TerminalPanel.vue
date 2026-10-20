@@ -156,10 +156,13 @@ async function fetchRemoteMetadata() {
     if (remoteInfo.username) sshForm.username = remoteInfo.username
   }
 
-  // 2. Secondary source: Backend device system_info registry
-  if (!props.remoteDeviceId) return
+  // 2. Secondary source: Backend device system_info registry (needs the approved session's viewer token)
+  const viewerToken = props.webrtc?.viewerToken?.value
+  if (!props.remoteDeviceId || !viewerToken) return
   try {
-    const res = await fetch(apiUrl(`/api/v1/devices/${props.remoteDeviceId}/system_info`))
+    const res = await fetch(apiUrl(`/api/v1/devices/${props.remoteDeviceId}/system_info`), {
+      headers: { Authorization: `Bearer ${viewerToken}` },
+    })
     if (res.ok) {
       const d = await res.json()
       const info = d.info || {}
@@ -339,6 +342,8 @@ function connectSSH() {
   }, 12000)
 
   sshSocket.onopen = () => {
+    // The bridge only opens for the controller of an approved session
+    sshSocket.send(JSON.stringify({ type: 'auth', token: props.webrtc?.viewerToken?.value || '' }))
     term?.writeln(`\r\n\x1b[1;36m[SSH] Connecting to ${sshForm.username}@${sshForm.host}:${sshForm.port}...\x1b[0m\r\n`)
     sshSocket.send(JSON.stringify({
       type: 'connect',
