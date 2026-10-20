@@ -102,7 +102,7 @@ import { useRouter } from 'vue-router'
 import { setHostedAddress } from '../composables/useMyAddress.js'
 import { useHostSession } from '../composables/useHostSession.js'
 import { useDevice } from '../composables/useDevice.js'
-import { isNativeApp } from '../composables/serverConfig.js'
+import { apiUrl, isNativeApp } from '../composables/serverConfig.js'
 import ChatPanel from '../components/ChatPanel.vue'
 
 const router = useRouter()
@@ -122,9 +122,11 @@ const statusDot = computed(() => {
 
 const copiedCmd = ref(false)
 function buildAgentCommand(token) {
-  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  // The server this page talks to right now. Quick tunnel addresses change on every restart, so the
+  // agent is told where to connect instead of relying on the address baked into agent.py.
+  const server = new URL(apiUrl('/agent.py'), window.location.href).origin
   const code = session.sessionCode.value || ''
-  return `curl -sSL ${origin}/agent.py | python3 - --device ${code} --token ${token}`
+  return `curl -sSL ${server}/agent.py | python3 - --device ${code} --token ${token} --server ${server}`
 }
 // The screen may be shared with the controller, so only the copied command holds the token
 const agentCommand = computed(() => buildAgentCommand('••••••••'))
