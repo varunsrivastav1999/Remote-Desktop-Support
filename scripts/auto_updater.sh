@@ -42,8 +42,14 @@ while true; do
       continue
     fi
 
-    echo "[Auto-Updater] Rebuilding and applying Docker services..."
-    docker compose up -d --build
+    # Rebuild every service except this updater: recreating its own container kills this
+    # script mid-run and leaves the other containers created but never started.
+    SERVICES=$(docker compose config --services | grep -vx "auto_updater")
+    echo "[Auto-Updater] Rebuilding and applying Docker services: $(echo $SERVICES)"
+    if ! docker compose up -d --build $SERVICES; then
+      echo "[Auto-Updater] ❌ Rebuild failed. Fix it and run 'docker compose up -d --build' in the repository."
+      continue
+    fi
 
     echo "[Auto-Updater] ✅ Update complete! Services reloaded to commit $REMOTE_HASH"
   fi
