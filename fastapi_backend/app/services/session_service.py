@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import secrets
@@ -72,6 +73,29 @@ async def verify_device_or_viewer_token(
     if await verify_viewer_token(redis_client, device_id, token):
         return True
     return await verify_device_token(db, device_id, token)
+
+
+# ─── Request tokens ───────────────────────────────────────────────────────────
+# Only the caller that created a connection request may poll it (the reply carries the
+# session token), so /connect hands that caller a secret and the poll endpoint requires it.
+
+def request_token_key(request_id: str) -> str:
+    return f"connection_request:{request_id}:requester"
+
+
+async def issue_request_token(redis_client: redis.Redis, request_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    await redis_client.set(request_token_key(request_id), digest, ex=settings.SESSION_TTL_SECONDS)
+    return token
+
+
+async def verify_request_token(redis_client: redis.Redis, request_id: str, token: str) -> bool:
+    if not token:
+        return False
+    expected = await redis_client.get(request_token_key(request_id))
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return bool(expected) and secrets.compare_digest(expected, digest)
 
 
 async def create_connection_request(
@@ -281,7 +305,6 @@ async def process_approval(
     # Verify that the approver is the actual target device
     cred_res = await db.execute(select(DeviceCredential).where(DeviceCredential.device_id == conn_req.target_device_id))
     credential = cred_res.scalar_one_or_none()
-    import hashlib
     hashed = hashlib.sha256(host_auth_token.encode("utf-8")).hexdigest()
     if not credential or not secrets.compare_digest(credential.auth_token_hash, hashed):
         raise PermissionError("Unauthorized device attempting approval.")
@@ -341,7 +364,6 @@ async def process_approval(
                 "data": {
                     "type": "connection_accepted",
                     "request_id": request_id,
-                    "session_token": session_token,
                 },
             }),
         )

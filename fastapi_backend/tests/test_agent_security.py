@@ -11,6 +11,9 @@ and the endpoints that trusted anyone who knew a Device ID:
   6. POST /api/v1/devices/{id}/clear-pending
   7. GET /api/v1/devices/{id}/system_info and /api/v1/agent/{id}/health (username, hostname, LAN IPs)
   8. the /ws/ssh/{id} bridge
+  9. client registration on /ws/{id}: any socket could join as client, receive host->client traffic
+     and replace the approved controller
+ 10. GET /api/v1/sessions/request/{id}, which returned the session token to anyone with the id
 
 Run against an isolated stack, never the live one:
     BASE_URL=http://127.0.0.1:18000 python tests/test_agent_security.py
@@ -316,6 +319,13 @@ async def register_client(device_id, name="Controller"):
     return ws
 
 
+async def try_register_client(device_id, name="Intruder"):
+    """Try to register as client; return (socket, first reply)."""
+    ws = await websockets.connect(f"{WS_BASE}/ws/{device_id}")
+    await ws.send(json.dumps({"type": "register", "role": "client", "client_device_id": name, "caller_name": name}))
+    return ws, await recv_json(ws)
+
+
 async def approve(host, client):
     """Host approves the waiting controller by sending its offer; return the viewer token."""
     await host.send(json.dumps({"type": "offer", "sdp": {"type": "offer", "sdp": "v=0"}}))
@@ -449,10 +459,10 @@ async def test_device_metadata_requires_device_or_session_token():
         client = await register_client(device_id)
         second_viewer = await approve(host, client)
         assert_metadata_allowed(device_id, second_viewer)
-        replacement = await register_client(device_id, "Replacement")
-        await asyncio.sleep(0.2)
-        assert_metadata_refused(device_id, second_viewer)
-        await replacement.close()
+        # Another socket can't take the approved controller's place (and its token stays valid)
+        replacement, reply = await try_register_client(device_id, "Replacement")
+        assert reply.get("type") == "error" and await close_code(replacement) == 4409, reply
+        assert_metadata_allowed(device_id, second_viewer)
 
         # ...and when the host leaves
         await client.close()
@@ -522,6 +532,125 @@ async def test_ssh_bridge_requires_device_or_session_token():
     print("✓ /ws/ssh needs the device token or the approved session's viewer token")
 
 
+# ─── 9. Client registration on /ws/{id} ───────────────────────────────────────
+
+HOST_TO_CLIENT = [
+    {"type": "system_info", "hostname": "secret-host", "username": "secret_user"},
+    {"type": "monitors", "monitors": [{"index": 1, "name": "secret-monitor"}]},
+    {"type": "chat", "text": "secret chat"},
+    {"type": "clipboard", "text": "secret clipboard"},
+    {"type": "ice", "candidate": {"candidate": "secret-candidate"}},
+]
+
+
+async def peer_joined_connection(host):
+    """Return the client_connection_id of the next client peer_joined the host sees."""
+    for _ in range(10):
+        msg = await recv_json(host)
+        if msg.get("type") == "peer_joined" and msg.get("role") == "client":
+            return msg["client_connection_id"]
+    raise AssertionError("Host saw no peer_joined for the controller")
+
+
+async def test_signaling_client_traffic_only_reaches_approved_controller():
+    device_id, device_token, _ = new_device()
+    host = bystander = controller = None
+    try:
+        host, reply = await register_host(device_id, device_token)
+        assert reply == {"type": "registered", "role": "host"}, reply
+        await drain(host, 0.3)
+
+        # Two sockets join before approval; the later one is the room's controller
+        bystander = await register_client(device_id, "Bystander")
+        bystander_conn = await peer_joined_connection(host)
+        controller = await register_client(device_id, "Controller")
+        controller_conn = await peer_joined_connection(host)
+        assert bystander_conn != controller_conn
+        await drain(bystander, 0.3)
+        await drain(controller, 0.3)
+
+        # Approval names the connection the host saw; a stale one is refused and re-announced
+        await host.send(json.dumps({"type": "offer", "sdp": {"type": "offer", "sdp": "v=0"},
+                                    "client_connection_id": bystander_conn}))
+        refused = await drain(host, 0.5)
+        assert refused[0].get("type") == "error", refused
+        assert any(m.get("type") == "peer_joined" and m.get("client_connection_id") == controller_conn
+                   for m in refused), refused
+        assert await drain(controller, 0.3) == [] and await drain(bystander, 0.3) == []
+
+        await host.send(json.dumps({"type": "offer", "sdp": {"type": "offer", "sdp": "v=0"},
+                                    "client_connection_id": controller_conn}))
+        for msg in HOST_TO_CLIENT:
+            await host.send(json.dumps(msg))
+        got = await drain(controller, 0.5)
+        types_got = [m.get("type") for m in got]
+        assert "offer" in types_got and "session_credential" in types_got, got
+        for msg in HOST_TO_CLIENT:
+            assert msg["type"] in types_got, f"Approved controller missed {msg['type']}: {got}"
+
+        leaked = await drain(bystander, 0.5)
+        assert leaked == [], f"Host traffic reached an unapproved client socket: {leaked}"
+
+        # A replaced socket can't talk to the host either
+        await bystander.send(json.dumps({"type": "answer", "sdp": {"type": "answer", "sdp": "v=0"}}))
+        await bystander.send(json.dumps({"type": "chat", "text": "spoofed"}))
+        assert all(m.get("type") == "error" for m in await drain(bystander, 0.3))
+        assert await drain(host, 0.3) == [], "A replaced client socket still reached the host"
+
+        # Nobody can register over the approved controller
+        for name in ("Intruder", "Controller"):
+            intruder, reply = await try_register_client(device_id, name)
+            assert reply.get("type") == "error", f"Client registered over the approved controller: {reply}"
+            assert await close_code(intruder) == 4409
+        await host.send(json.dumps({"type": "chat", "text": "still here"}))
+        assert any(m.get("text") == "still here" for m in await drain(controller, 0.5)), \
+            "Approved controller lost the room to a rejected registration"
+        await controller.send(json.dumps({"type": "chat", "text": "from controller"}))
+        assert any(m.get("text") == "from controller" for m in await drain(host, 0.5))
+
+        # Once the approved controller leaves, a new one may join (and must be approved again)
+        await controller.close()
+        await asyncio.sleep(0.3)
+        controller = await register_client(device_id, "Next")
+        await host.send(json.dumps({"type": "chat", "text": "before approval"}))
+        assert any(m.get("text") == "before approval" for m in await drain(controller, 0.5))
+    finally:
+        for ws in (host, bystander, controller):
+            if ws:
+                await ws.close()
+    print("✓ /ws client traffic reaches only the current controller, and an approved one can't be displaced")
+
+
+# ─── 10. Connection request status ────────────────────────────────────────────
+
+async def test_request_status_requires_request_token():
+    target_id, target_token, _ = new_device()
+    caller_id, _, _ = new_device()
+    connect = {"caller_device_id": caller_id, "caller_name": "Caller", "target_device_id": target_id}
+    status, created = http("POST", "/api/v1/sessions/connect", connect)
+    assert status == 200 and created["status"] == "pending" and created["request_token"], created
+    status, other = http("POST", "/api/v1/sessions/connect", connect)
+    assert status == 200, other
+    path = f"/api/v1/sessions/request/{created['request_id']}"
+
+    status, reply = http("POST", "/api/v1/sessions/approve",
+                         {"request_id": created["request_id"], "accept": True, "auth_token": target_token})
+    assert status == 200 and reply["session_token"], reply
+
+    for token in (None, "", "forged", target_token, other["request_token"]):
+        status, reply = http("GET", path, token=token)
+        assert status == 401, f"Request status answered token {token!r}: {status} {reply}"
+        assert reply.get("session_token") is None if isinstance(reply, dict) else True
+    status, reply = http("GET", path, headers={"Authorization": created["request_token"]})
+    assert status == 401, f"Request status answered a token without Bearer: {status} {reply}"
+    status, reply = http("GET", f"/api/v1/sessions/request/{secrets.token_hex(8)}", token=created["request_token"])
+    assert status == 401, reply
+
+    status, reply = http("GET", path, token=created["request_token"])
+    assert status == 200 and reply["status"] == "accepted" and reply["session_token"], reply
+    print("✓ Only the caller that created a connection request can poll it")
+
+
 async def main():
     await test_rest_agent_dispatch_requires_device_token()
     await test_signaling_host_requires_valid_token()
@@ -532,6 +661,8 @@ async def main():
     await test_clear_pending_requires_device_token()
     await test_device_metadata_requires_device_or_session_token()
     await test_ssh_bridge_requires_device_or_session_token()
+    await test_signaling_client_traffic_only_reaches_approved_controller()
+    await test_request_status_requires_request_token()
     print("\n>>> ALL AGENT SECURITY TESTS PASSED! <<<")
 
 

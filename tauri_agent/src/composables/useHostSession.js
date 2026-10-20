@@ -40,6 +40,9 @@ function createHostSession() {
   let terminalPollInterval = null
   let fileChannel = null
   let queuedIce = []
+  // Signaling connection of the controller the host is asked to approve; the offer names it so
+  // approval can't pass to a different socket that joined in the meantime.
+  let pendingClientConnection = null
   let onlinePromise = null
   let currentIncomingUpload = null
   let agentPollTimer = null
@@ -231,6 +234,7 @@ function createHostSession() {
         }
 
         pendingController.value = true
+        pendingClientConnection = message.client_connection_id || pendingClientConnection
         incomingCallerName.value = message.caller_name || 'Remote Controller'
         incomingCallerId.value = callerId
         state.value = 'approval'
@@ -260,6 +264,7 @@ function createHostSession() {
           queuedIce.push(message.candidate)
         }
       } else if (message.type === 'peer_left' && message.role === 'client') {
+        pendingClientConnection = null
         closePeer()
         pendingController.value = false
         controlEnabled.value = false
@@ -602,7 +607,10 @@ function createHostSession() {
 
     const offer = await peerConnection.createOffer()
     await peerConnection.setLocalDescription(offer)
-    signaling.sendOffer({ type: offer.type, sdp: offer.sdp })
+    const offerMessage = { type: 'offer', sdp: { type: offer.type, sdp: offer.sdp } }
+    if (pendingClientConnection) offerMessage.client_connection_id = pendingClientConnection
+    pendingClientConnection = null
+    signaling.send(offerMessage)
   }
 
   function startTerminalPolling() {

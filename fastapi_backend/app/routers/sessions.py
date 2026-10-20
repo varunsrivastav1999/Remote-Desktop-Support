@@ -22,7 +22,9 @@ from app.services.device_service import normalize_device_id
 from app.services.presence_service import is_device_online
 from app.services.session_service import (
     create_connection_request,
+    issue_request_token,
     process_approval,
+    verify_request_token,
 )
 from app.services.audit_service import log_audit_event
 
@@ -60,6 +62,8 @@ async def connect_to_device(
             pin=payload.pin,
         )
 
+        request_token = await issue_request_token(redis_client, conn_req.id)
+
         await log_audit_event(
             db,
             event_type="connection_requested",
@@ -80,6 +84,7 @@ async def connect_to_device(
             session_code=conn_req.target_device_id if conn_req.status == "accepted" else None,
             ws_url=f"/ws/{conn_req.target_device_id}" if conn_req.status == "accepted" else None,
             message=message,
+            request_token=request_token,
         )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -145,11 +150,20 @@ async def approve_connection_request(
 @router.get("/api/v1/sessions/request/{request_id}")
 async def check_request_status(
     request_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
 ):
     """
     Poll connection request status (useful fallback if WebSocket push dropped).
+    Only the caller that created the request may poll it:
+    Authorization: Bearer <request_token from /connect>.
     """
+    scheme, _, token = (authorization or "").partition(" ")
+    token = token.strip() if scheme.lower() == "bearer" else ""
+    if not await verify_request_token(get_redis(request), request_id, token):
+        raise HTTPException(status_code=401, detail="Invalid request token")
+
     res = await db.execute(select(ConnectionRequest).where(ConnectionRequest.id == request_id))
     conn_req = res.scalar_one_or_none()
     if not conn_req:

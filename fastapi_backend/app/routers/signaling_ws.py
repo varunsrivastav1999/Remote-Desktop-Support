@@ -10,7 +10,7 @@ import redis.asyncio as redis
 from app.database import async_session_factory
 from app.services.device_service import normalize_device_id, verify_agent_token, verify_device_token
 from app.services.presence_service import set_device_online, set_device_offline
-from app.services.session_service import issue_viewer_token, revoke_viewer_token
+from app.services.session_service import issue_viewer_token, revoke_viewer_token, viewer_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["signaling"])
@@ -315,11 +315,32 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
     async def send_error(msg: str) -> None:
         await websocket.send_json({"type": "error", "message": msg})
 
-    async def publish_event(sender_role: str, data: dict, target_role: Optional[str]) -> None:
+    peer_key = lambda r: f"session:{code}:peer:{r}"
+
+    # Only one client connection is "the" controller: the one in peer:client. Anyone can open a
+    # socket and register as client, so everything bound for the client goes to that connection
+    # alone, and once the host has approved it (sent its offer) nobody else can replace it.
+    async def current_client() -> Optional[str]:
+        return await redis_client.get(peer_key("client"))
+
+    async def approved_client() -> Optional[str]:
+        """The client connection the host approved, while it is still the room's client."""
+        approved = await redis_client.hget(viewer_key(norm_code), "connection_id")
+        if approved and approved == await current_client():
+            return approved
+        return None
+
+    async def publish_event(
+        sender_role: str, data: dict, target_role: Optional[str], target_connection: Optional[str] = None
+    ) -> None:
+        if sender_role == "host" and target_role == "client" and target_connection is None:
+            # "" matches no connection: with no controller in the room the message goes nowhere
+            target_connection = await current_client() or ""
         payload = json.dumps({
             "connection_id": connection_id,
             "sender_role": sender_role,
             "target_role": target_role,
+            "target_connection": target_connection,
             "data": data,
         })
         await redis_client.publish(channel_name, payload)
@@ -384,9 +405,14 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                         continue
                     if payload.get("target_connection") not in (None, connection_id):
                         continue
-                    if role and payload.get("target_role") in (None, role):
-                        msg_to_send = payload.get("data") if (isinstance(payload, dict) and "data" in payload) else payload
-                        await websocket.send_json(msg_to_send)
+                    if not role or payload.get("target_role") not in (None, role):
+                        continue
+                    if (role == "client" and payload.get("target_connection") != connection_id
+                            and await current_client() != connection_id):
+                        # A replaced or never-current client socket gets no room traffic
+                        continue
+                    msg_to_send = payload.get("data") if (isinstance(payload, dict) and "data" in payload) else payload
+                    await websocket.send_json(msg_to_send)
                 except Exception as inner_e:
                     logger.warning(f"Error handling pubsub message in session {code}: {inner_e}")
         except asyncio.CancelledError:
@@ -413,8 +439,6 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
 
     listener_task = asyncio.create_task(listen_for_peer())
 
-    peer_key = lambda r: f"session:{code}:peer:{r}"
-
     try:
         while True:
             text = await websocket.receive_text()
@@ -422,7 +446,7 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
             message_type = data.get("type")
 
             if message_type == "ping":
-                if role:
+                if role and (role == "host" or await current_client() == connection_id):
                     await redis_client.expire(peer_key(role), PEER_TTL_SECONDS)
                     if await holds_control():
                         await redis_client.expire(control_key, PEER_TTL_SECONDS)
@@ -451,6 +475,12 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                         break
                 else:
                     # requested_role == "client"
+                    if await approved_client():
+                        # The host already approved a controller; it can't be displaced (it
+                        # frees the room when it disconnects or stops pinging).
+                        await send_error("Another controller is already connected to this device.")
+                        await websocket.close(code=4409, reason="Controller already connected")
+                        break
                     # Notify host via device push channel that a client is waiting in room
                     caller_id = data.get("client_device_id") or "Remote Client"
                     caller_name = data.get("caller_name") or "Remote Controller"
@@ -461,6 +491,7 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     await redis_client.expire(f"session:{code}:client_info", 300)
 
                     waiting_payload = json.dumps({
+                        "target_role": "host",
                         "type": "client_waiting",
                         "session_code": code,
                         "connection_id": connection_id,
@@ -514,6 +545,7 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                             "role": "client",
                             "caller_device_id": c_id,
                             "caller_name": c_name,
+                            "client_connection_id": await current_client(),
                         })
                     else:
                         await websocket.send_json({"type": "peer_joined", "role": other_role})
@@ -530,6 +562,9 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     "caller_device_id": data.get("client_device_id") or "Remote Client",
                     "caller_name": data.get("caller_name") or "Remote Controller",
                 }
+                if role == "client":
+                    # The host names this connection in its offer, so approval binds to it
+                    peer_joined_payload["client_connection_id"] = connection_id
                 await publish_event(
                     role,
                     peer_joined_payload,
@@ -541,6 +576,11 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 await send_error("Register before sending signaling messages.")
                 continue
 
+            if role == "client" and await current_client() != connection_id:
+                await send_error("Another controller has replaced this connection.")
+                continue
+
+            target_connection = None
             if message_type == "ice":
                 target_role = "client" if role == "host" else "host"
             elif message_type in SIGNAL_TYPES and SIGNAL_TYPES[message_type][0] == role:
@@ -549,7 +589,22 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     # The host sends its offer only once it has approved the waiting controller,
                     # so that controller connection now gets a viewer token for the device's
                     # metadata and SSH bridge. It is delivered to that connection alone.
-                    client_connection = await redis_client.get(peer_key("client"))
+                    client_connection = await current_client()
+                    approved = data.get("client_connection_id")
+                    if approved and approved != client_connection:
+                        # The controller the host approved left or was replaced before the offer
+                        await send_error("The approved controller is no longer connected.")
+                        if client_connection:
+                            c_info = await redis_client.hgetall(f"session:{code}:client_info")
+                            await websocket.send_json({
+                                "type": "peer_joined",
+                                "role": "client",
+                                "caller_device_id": c_info.get("caller_device_id", "Remote Client"),
+                                "caller_name": c_info.get("caller_name", "Remote Controller"),
+                                "client_connection_id": client_connection,
+                            })
+                        continue
+                    target_connection = client_connection or ""
                     if client_connection:
                         viewer_token = await issue_viewer_token(redis_client, code, norm_code, client_connection)
                         await redis_client.publish(channel_name, json.dumps({
@@ -593,7 +648,7 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 await send_error(f"Message type '{message_type}' is not allowed for role '{role}'.")
                 continue
 
-            await publish_event(role, data, target_role)
+            await publish_event(role, data, target_role, target_connection)
 
     except WebSocketDisconnect:
         pass

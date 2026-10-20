@@ -17,6 +17,8 @@ class ConnectionRequestResponse(BaseModel):
     session_code: Optional[str] = None
     ws_url: Optional[str] = None
     message: str
+    # Secret for polling GET /api/v1/sessions/request/{request_id}; only this caller gets it
+    request_token: Optional[str] = None
 
 
 class ConnectionApprovalRequest(BaseModel):

@@ -441,11 +441,14 @@ async function legacyJoin(code) {
   router.push({ name: 'Session', params: { code } })
 }
 
-function pollRequestApproval(requestId, targetId) {
+// requestToken: the request_token returned by /api/v1/sessions/connect; only its holder may poll
+function pollRequestApproval(requestId, requestToken, targetId) {
   if (outgoingPollTimer) clearInterval(outgoingPollTimer)
   outgoingPollTimer = setInterval(async () => {
     try {
-      const res = await fetch(apiUrl(`/api/v1/sessions/request/${requestId}`, loadNetworkSettings()))
+      const res = await fetch(apiUrl(`/api/v1/sessions/request/${requestId}`, loadNetworkSettings()), {
+        headers: { Authorization: `Bearer ${requestToken}` },
+      })
       if (!res.ok) return
       const data = await res.json()
       if (data.status === 'accepted') {
