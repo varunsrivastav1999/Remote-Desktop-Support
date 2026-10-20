@@ -10,7 +10,7 @@
       <p class="conn-card__sub text-secondary">{{ subtitle }}</p>
       <div v-if="sessionCode" class="conn-card__code">
         <span class="text-muted" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em">Session</span>
-        <span class="session-code" style="font-size:1.6rem">{{ sessionCode }}</span>
+        <span class="session-code conn-card__session">{{ sessionCode }}</span>
       </div>
       <div class="conn-steps">
         <div v-for="(step,i) in steps" :key="i" :class="['cstep',{'cstep--done':step.done,'cstep--active':step.active}]">
@@ -71,6 +71,7 @@ const steps = computed(() => [
 .conn-card__spinner-ring::before { content:''; position:absolute; inset:0; border:2px solid transparent; border-top-color:var(--color-accent-primary); border-right-color:var(--color-accent-primary); border-radius:50%; animation:spin 2s linear infinite; }
 .conn-card__dot { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
 .conn-card__dot .status-dot { width:14px; height:14px; }
+.conn-card__session { font-size:clamp(1.15rem, 6vw, 1.6rem); white-space:nowrap; }
 .conn-card__title { font-size:1.1rem; font-weight:700; margin-bottom:4px; }
 .conn-card__sub { font-size:0.85rem; margin-bottom:var(--space-lg); }
 .conn-card__code { display:flex; flex-direction:column; gap:2px; margin-bottom:var(--space-lg); }

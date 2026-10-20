@@ -1011,11 +1011,51 @@ onMounted(async () => {
 }
 
 @media (max-width: 600px) {
+  /* Row 1: logo + icons, row 2: full-width Device ID search, row 3: this device */
+  .topbar__left {
+    display: contents;
+  }
+  .topbar__logo {
+    order: 1;
+    flex: 1;
+  }
+  .topbar__right {
+    order: 2;
+  }
+  .topbar__connect {
+    order: 3;
+    width: 100%;
+    min-width: 0;
+  }
+  .topbar__input {
+    flex: 1;
+    min-width: 0;
+  }
+  .topbar__center {
+    order: 4;
+  }
+  .topbar__address {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@media (max-width: 600px) {
+  .incoming-dialog {
+    width: 100%;
+    padding: 20px 18px;
+  }
+  .incoming-actions {
+    flex-direction: column-reverse;
+  }
+  .incoming-actions > .btn {
+    width: 100%;
+  }
   .topbar__connect {
     padding: 2px 4px 2px 8px;
   }
   .topbar__input {
-    width: 140px;
     font-size: 0.78rem;
   }
   .topbar__label {

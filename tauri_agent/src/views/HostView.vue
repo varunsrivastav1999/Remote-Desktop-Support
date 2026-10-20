@@ -258,7 +258,7 @@ onUnmounted(() => {
 .host__content {
   flex: 1;
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: minmax(0, 400px) minmax(0, 1fr);
   gap: 24px;
   padding: 28px;
   min-height: 0;
@@ -273,6 +273,8 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: flex-start;
   gap: 18px;
+  min-width: 0;
+  overflow-y: auto;
 }
 
 .label {
@@ -283,7 +285,8 @@ onUnmounted(() => {
 }
 
 .code {
-  font-size: 1.8rem;
+  font-size: clamp(1.4rem, 6vw, 1.8rem);
+  overflow-wrap: anywhere;
   font-weight: 700;
   color: var(--color-accent-primary);
   letter-spacing: 0.08em;
@@ -332,6 +335,14 @@ onUnmounted(() => {
 .preview__empty {
   color: rgba(255,255,255,0.45);
   font-size: 0.9rem;
+  padding: 0 16px;
+  text-align: center;
+  /* Centered over the (empty) video element instead of beside it */
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .preview__badge {
@@ -447,8 +458,10 @@ onUnmounted(() => {
 }
 
 .agent-launcher-box {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  align-self: stretch;
+  min-width: 0;
+  background: var(--ad-surface-alt);
+  border: 1px solid var(--ad-border);
   border-radius: 10px;
   padding: 12px 14px;
   margin-bottom: 12px;
@@ -459,12 +472,12 @@ onUnmounted(() => {
   margin: 0 0 8px;
   font-size: 0.78rem;
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--ad-text);
 }
 
 .agent-launcher-command {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   background: rgba(0, 0, 0, 0.4);
   padding: 8px 10px;
@@ -474,15 +487,75 @@ onUnmounted(() => {
 
 .agent-launcher-command code {
   flex: 1;
+  min-width: 0;
   font-size: 0.72rem;
+  line-height: 1.5;
   color: #64b5f6;
-  overflow-x: auto;
-  white-space: nowrap;
+  /* Show the whole command at any width instead of running off the card */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
 .agent-launcher-hint {
   margin: 6px 0 0;
   font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ad-text-muted);
+}
+
+.share-card > .btn {
+  max-width: 100%;
+}
+
+/* Tablet and phone: one column, the page scrolls instead of clipping */
+@media (max-width: 900px) {
+  .host {
+    height: auto;
+    min-height: calc(100vh - 42px);
+    overflow: visible;
+  }
+  .host__content {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
+    gap: 16px;
+  }
+  .share-card {
+    overflow: visible;
+  }
+  .preview {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+  }
+  .host-approval-banner {
+    margin: 0 16px 16px;
+  }
+}
+
+@media (max-width: 600px) {
+  .host__header {
+    height: auto;
+    min-height: 52px;
+    padding: 8px 16px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .share-card {
+    padding: 18px 16px;
+    gap: 14px;
+  }
+  .share-card > .btn {
+    width: 100%;
+  }
+  .host-approval-banner {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 14px 16px;
+  }
+  .host-approval-info {
+    align-items: flex-start;
+  }
+  .host-approval-actions > .btn {
+    flex: 1;
+  }
 }
 </style>

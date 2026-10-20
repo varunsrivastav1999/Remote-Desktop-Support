@@ -218,7 +218,7 @@
           <line x1="18" y1="6" x2="6" y2="18"/>
           <line x1="6" y1="6" x2="18" y2="18"/>
         </svg>
-        Disconnect
+        <span class="toolbar__btn-label">Disconnect</span>
       </button>
     </div>
   </div>
@@ -506,10 +506,81 @@ const statusLabel = computed(() => {
   to { transform: scale(1); }
 }
 
+/* Below laptop width the centered Take Control button would sit on top of the side groups,
+   so the toolbar wraps into rows instead */
+@media (max-width: 1180px) {
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+  .toolbar__center {
+    position: static;
+    transform: none;
+    order: 3;
+    width: 100%;
+  }
+  .toolbar__left {
+    flex: 1 1 auto;
+  }
+  .toolbar__code,
+  .toolbar__status-text,
+  .badge-mode {
+    white-space: nowrap;
+  }
+}
+
 @media (max-width: 900px) {
   .input-badge,
   .toolbar__host {
     display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .toolbar {
+    padding: 6px 10px;
+  }
+  .toolbar__left {
+    flex-basis: 100%;
+    min-width: 0;
+    gap: 8px;
+  }
+  .toolbar__right {
+    order: 2;
+    flex-basis: 100%;
+    gap: 4px;
+    /* All tools stay reachable: swipe the row sideways instead of overflowing the page */
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .toolbar__right::-webkit-scrollbar {
+    display: none;
+  }
+  .toolbar__right > * {
+    flex-shrink: 0;
+  }
+  .toolbar__right .btn--danger {
+    margin-left: auto;
+  }
+  .toolbar__btn-label,
+  .toolbar__screen-icon,
+  .toolbar__left .toolbar__sep {
+    display: none;
+  }
+  .badge-mode {
+    white-space: nowrap;
+    padding: 3px 8px;
+  }
+  .toolbar__code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .btn-control-action {
+    width: 100%;
+    justify-content: center;
+    padding: 9px 16px;
   }
 }
 </style>

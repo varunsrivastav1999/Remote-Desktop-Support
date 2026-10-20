@@ -769,9 +769,21 @@ onUnmounted(() => {
 }
 
 @media (max-width: 640px) {
+  /* Keep the three counters on one compact row instead of a screen-tall stack */
   .dashboard-banner {
-    grid-template-columns: 1fr;
-    gap: 10px;
+    gap: 8px;
+  }
+  .metric-card {
+    padding: 10px 12px;
+    min-width: 0;
+  }
+  .metric-num {
+    font-size: 1.3rem;
+  }
+  .metric-label {
+    font-size: 0.62rem;
+    letter-spacing: 0.02em;
+    overflow-wrap: anywhere;
   }
   .quick-connect-bar {
     flex-direction: column;
