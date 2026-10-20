@@ -82,7 +82,7 @@ Device ID: AG-482-193-721                           Device ID: AG-735-281-904
 - **Visible & Controllable Mouse Pointer:**
   - **Letterbox-Aware Coordinate Calculation:** Automatically scales input across any screen aspect ratio or window size with 100% pixel precision.
   - **High-Visibility Cursor:** Sharp SVG pointer with drop shadow and interactive click/drag indicator dot.
-  - **Full Mouse Actions:** Single click, double click, right-click (`contextmenu`), drag-and-drop, and scroll wheel.
+  - **Full Mouse Actions:** Single click, double click, right-click, drag-and-drop, and scroll wheel. Only raw press/release events are forwarded (with the browser click count); the OS — or, on macOS, the click-state the agent stamps — turns them into double-clicks.
 - **Two-Way In-Session Chat:** Host and Controller can chat seamlessly with unread message badges on both ends.
 - **Interactive Shell / SSH Terminal:** Real interactive shell via `xterm.js` and WebRTC data channel with zero port 22 exposure.
 - **P2P File Transfer:** Direct file browsing, downloading files in 48 KB chunks, uploading with live progress tracking, folder creation, and deletion.

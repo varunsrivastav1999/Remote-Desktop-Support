@@ -798,8 +798,10 @@ function createHostSession() {
       if (isNativeApp()) {
         if (message.type === 'mousemove') {
           await invoke('move_mouse', { x: message.x, y: message.y })
-        } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click' || message.type === 'dblclick' || message.type === 'contextmenu') {
-          const btn = message.type === 'contextmenu' ? 2 : (message.button ?? 0)
+        } else if (message.type === 'mousedown' || message.type === 'mouseup' || message.type === 'click') {
+          // dblclick/contextmenu are ignored: the raw press/release pairs already carry them,
+          // and enigo derives the macOS click count from their timing like the OS does elsewhere
+          const btn = message.button ?? 0
           await invoke('move_mouse', { x: message.x, y: message.y })
           if (message.type === 'mousedown') {
             await invoke('mouse_event', { button: btn, isDown: true })
@@ -807,13 +809,7 @@ function createHostSession() {
           } else if (message.type === 'mouseup') {
             await invoke('mouse_event', { button: btn, isDown: false })
             pressedButtons.delete(btn)
-          } else if (message.type === 'click' || message.type === 'contextmenu') {
-            await invoke('mouse_event', { button: btn, isDown: true })
-            await invoke('mouse_event', { button: btn, isDown: false })
-          } else if (message.type === 'dblclick') {
-            await invoke('mouse_event', { button: btn, isDown: true })
-            await invoke('mouse_event', { button: btn, isDown: false })
-            await new Promise(r => setTimeout(r, 40))
+          } else {
             await invoke('mouse_event', { button: btn, isDown: true })
             await invoke('mouse_event', { button: btn, isDown: false })
           }

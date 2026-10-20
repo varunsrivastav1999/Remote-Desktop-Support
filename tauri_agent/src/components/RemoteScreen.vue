@@ -9,8 +9,8 @@
     @mousedown="handleMouse('mousedown', $event)"
     @mouseup="handleMouse('mouseup', $event)"
     @mousemove="handleMouse('mousemove', $event)"
-    @dblclick.prevent="handleMouse('dblclick', $event)"
-    @contextmenu.prevent="handleMouse('contextmenu', $event)"
+    @dblclick.prevent
+    @contextmenu.prevent
     @wheel.prevent="handleWheel"
     @keydown.prevent="handleKey('keydown', $event)"
     @keyup.prevent="handleKey('keyup', $event)"
@@ -268,18 +268,19 @@ function handleMouse(type, event) {
   const coords = getRelativeCoordinates(event)
   if (!coords) return
 
-  let btn = event.button
-  if (type === 'contextmenu') {
-    btn = 2
+  // Only raw press/release are forwarded; the browser's synthesized dblclick/contextmenu
+  // would duplicate them. event.detail is the click count (2 on a double-click's second
+  // press) so injectors that need it (pynput on macOS) can mark the OS event accordingly.
+  const extra = { button: event.button }
+  if (type === 'mousedown' || type === 'mouseup') {
+    extra.clicks = Math.max(1, event.detail || 1)
   }
 
   emit('mouse-event', {
     type,
     x: coords.x,
     y: coords.y,
-    extra: {
-      button: btn,
-    },
+    extra,
   })
 }
 

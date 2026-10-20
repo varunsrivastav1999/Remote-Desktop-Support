@@ -153,11 +153,35 @@ def run_xdotool(*args):
 # Unified Action Handlers (Mouse, Keyboard, Terminal, FS)
 # ═════════════════════════════════════════════════════════════
 
+def _press_or_release(btn, press, clicks):
+    # pynput's macOS controller stamps kCGMouseEventClickState only inside click(), so a
+    # separate press/release pair always reads as a single click there. Seed its counter with
+    # the controller-side click count (press increments it, release reuses it). Windows and X11
+    # detect double-clicks from the timing of the raw events themselves.
+    stamp = sys.platform == "darwin" and hasattr(mouse, "_click")
+    if stamp:
+        mouse._click = clicks - 1 if press else clicks
+    try:
+        if press:
+            mouse.press(btn)
+        else:
+            mouse.release(btn)
+    finally:
+        if stamp:
+            mouse._click = None
+
+
 def execute_mouse(data):
+    # Clients send raw mousedown/mouseup only (with "clicks" = the browser's click count);
+    # "dblclick"/"contextmenu" from older clients duplicate those pairs and are ignored.
     mtype = data.get("type", "mousemove")
     x_norm = float(data.get("x", 0))
     y_norm = float(data.get("y", 0))
     btn_idx = int(data.get("button", 0))
+    try:
+        clicks = max(1, min(3, int(data.get("clicks", 1))))
+    except (TypeError, ValueError):
+        clicks = 1
 
     target_x = max(0, min(SCREEN_WIDTH - 1, int(x_norm * SCREEN_WIDTH)))
     target_y = max(0, min(SCREEN_HEIGHT - 1, int(y_norm * SCREEN_HEIGHT)))
@@ -167,26 +191,20 @@ def execute_mouse(data):
             btn = Button.left
             if btn_idx == 1:
                 btn = Button.middle
-            elif btn_idx == 2 or mtype == "contextmenu":
+            elif btn_idx == 2:
                 btn = Button.right
 
             if mtype == "mousemove":
                 mouse.position = (target_x, target_y)
             elif mtype == "mousedown":
                 mouse.position = (target_x, target_y)
-                mouse.press(btn)
+                _press_or_release(btn, True, clicks)
             elif mtype == "mouseup":
                 mouse.position = (target_x, target_y)
-                mouse.release(btn)
+                _press_or_release(btn, False, clicks)
             elif mtype == "click":
                 mouse.position = (target_x, target_y)
                 mouse.click(btn, 1)
-            elif mtype == "dblclick":
-                mouse.position = (target_x, target_y)
-                mouse.click(btn, 2)
-            elif mtype == "contextmenu":
-                mouse.position = (target_x, target_y)
-                mouse.click(Button.right, 1)
             elif mtype == "scroll":
                 delta_x = int(data.get("deltaX", 0))
                 delta_y = int(data.get("deltaY", 0))
@@ -211,12 +229,6 @@ def execute_mouse(data):
             elif mtype == "click":
                 run_xdotool("mousemove", str(target_x), str(target_y))
                 run_xdotool("click", xbtn)
-            elif mtype == "dblclick":
-                run_xdotool("mousemove", str(target_x), str(target_y))
-                run_xdotool("click", "--repeat", "2", "1")
-            elif mtype == "contextmenu":
-                run_xdotool("mousemove", str(target_x), str(target_y))
-                run_xdotool("click", "3")
             elif mtype == "scroll":
                 delta_y = int(data.get("deltaY", 0))
                 run_xdotool("click", "5" if delta_y > 0 else "4")
