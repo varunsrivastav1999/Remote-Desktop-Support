@@ -142,6 +142,8 @@ onMounted(() => {
     // Register as client (viewer/controller)
     signaling.register('client', '', {
       client_device_id: device.deviceId.value || 'Remote Client',
+      // Proves the Device ID above to the host; without it the host sees an unverified caller
+      client_device_token: device.deviceToken.value || '',
       caller_name: device.deviceName.value || 'Remote Controller',
     })
   })

@@ -16,6 +16,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["signaling"])
 
 PEER_TTL_SECONDS = 60
+
+# Atomically make ARGV[1] the room's client connection (KEYS[1] = peer:client). An unverified
+# caller (ARGV[2] == "0") can't replace a verified one that is still the client (KEYS[2] names
+# the verified connection). Returns 1 when claimed, 0 when refused.
+CLAIM_CLIENT_SCRIPT = """
+local current = redis.call('GET', KEYS[1])
+if ARGV[2] == '0' and current and current == redis.call('GET', KEYS[2]) then
+    return 0
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[3]))
+if ARGV[2] == '1' then
+    redis.call('SET', KEYS[2], ARGV[1], 'EX', 86400)
+end
+return 1
+"""
 AGENT_AUTH_TIMEOUT_SECONDS = 10
 SIGNAL_TYPES = {
     "offer": ("host", "client"),
@@ -437,6 +452,28 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
             logger.warning(f"DB credential verification failed for host {room}: {auth_err}")
         return False
 
+    async def verify_caller(caller_id: str, token: str) -> bool:
+        """True when the controller proved it owns caller_id by presenting that device's token."""
+        if not caller_id or not token:
+            return False
+        try:
+            async with async_session_factory() as db:
+                return await verify_device_token(db, caller_id, token)
+        except Exception as auth_err:
+            logger.warning(f"DB credential verification failed for caller {caller_id}: {auth_err}")
+            return False
+
+    def caller_fields(c_info: dict) -> dict:
+        """Caller identity as the host sees it in peer_joined / client_waiting."""
+        return {
+            "caller_device_id": c_info.get("caller_device_id", "Remote Client"),
+            "caller_name": c_info.get("caller_name", "Remote Controller"),
+            # The claimed id and name are only trustworthy when the server verified the device token
+            "caller_verified": c_info.get("caller_verified") == "1",
+        }
+
+    caller_info: dict = {}
+
     listener_task = asyncio.create_task(listen_for_peer())
 
     try:
@@ -481,13 +518,31 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                         await send_error("Another controller is already connected to this device.")
                         await websocket.close(code=4409, reason="Controller already connected")
                         break
-                    # Notify host via device push channel that a client is waiting in room
                     caller_id = data.get("client_device_id") or "Remote Client"
                     caller_name = data.get("caller_name") or "Remote Controller"
-                    await redis_client.hset(
-                        f"session:{code}:client_info",
-                        mapping={"caller_device_id": caller_id, "caller_name": caller_name},
+                    # The client proves its Device ID with that device's own token; anyone else's
+                    # claimed id and name reach the host marked unverified.
+                    verified = await verify_caller(caller_id, data.get("client_device_token") or "")
+                    if verified:
+                        caller_id = normalize_device_id(caller_id)
+                    claimed = await redis_client.eval(
+                        CLAIM_CLIENT_SCRIPT, 2, peer_key("client"), f"session:{code}:verified_client",
+                        connection_id, "1" if verified else "0", PEER_TTL_SECONDS,
                     )
+                    if not claimed:
+                        # A verified controller is waiting for approval; an unverified socket must
+                        # not replace it (and the host's prompt with it).
+                        await send_error("A verified controller is already waiting for approval.")
+                        await websocket.close(code=4409, reason="Controller already waiting")
+                        break
+                    caller_info = {
+                        "caller_device_id": caller_id,
+                        "caller_name": caller_name,
+                        "caller_verified": "1" if verified else "0",
+                        "connection_id": connection_id,
+                    }
+                    # Notify host via device push channel that a client is waiting in room
+                    await redis_client.hset(f"session:{code}:client_info", mapping=caller_info)
                     await redis_client.expire(f"session:{code}:client_info", 300)
 
                     waiting_payload = json.dumps({
@@ -496,8 +551,8 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                         "session_code": code,
                         "connection_id": connection_id,
                         "request_id": f"direct-{code}",
-                        "caller_device_id": caller_id,
-                        "caller_name": caller_name,
+                        "client_connection_id": connection_id,
+                        **caller_fields(caller_info),
                     })
                     # Cache waiting payload as pending request for late-joining hosts
                     await redis_client.set(f"device:{code}:pending_request", waiting_payload, ex=120)
@@ -506,12 +561,9 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                     await redis_client.publish(f"channel:device:{code}", waiting_payload)
                     await redis_client.publish(f"channel:session:{code}", waiting_payload)
 
-                # Set or update the active peer connection for this role in Redis
-                await redis_client.set(
-                    peer_key(requested_role),
-                    connection_id,
-                    ex=PEER_TTL_SECONDS,
-                )
+                if requested_role == "host":
+                    # Set or update the active host connection (the client claimed its slot above)
+                    await redis_client.set(peer_key("host"), connection_id, ex=PEER_TTL_SECONDS)
 
                 if requested_role == "client":
                     # A new controller must be approved again before it can read device metadata
@@ -537,15 +589,15 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 # Check if other peer is already present in room
                 if await redis_client.exists(peer_key(other_role)):
                     if role == "host":
+                        client_connection = await current_client()
                         c_info = await redis_client.hgetall(f"session:{code}:client_info")
-                        c_id = c_info.get("caller_device_id", "Remote Client")
-                        c_name = c_info.get("caller_name", "Remote Controller")
+                        if c_info.get("connection_id") != client_connection:
+                            c_info = {}
                         await websocket.send_json({
                             "type": "peer_joined",
                             "role": "client",
-                            "caller_device_id": c_id,
-                            "caller_name": c_name,
-                            "client_connection_id": await current_client(),
+                            **caller_fields(c_info),
+                            "client_connection_id": client_connection,
                         })
                     else:
                         await websocket.send_json({"type": "peer_joined", "role": other_role})
@@ -556,13 +608,9 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                         "message": "Waiting for remote host to start stream...",
                     })
 
-                peer_joined_payload = {
-                    "type": "peer_joined",
-                    "role": role,
-                    "caller_device_id": data.get("client_device_id") or "Remote Client",
-                    "caller_name": data.get("caller_name") or "Remote Controller",
-                }
+                peer_joined_payload = {"type": "peer_joined", "role": role}
                 if role == "client":
+                    peer_joined_payload.update(caller_fields(caller_info))
                     # The host names this connection in its offer, so approval binds to it
                     peer_joined_payload["client_connection_id"] = connection_id
                 await publish_event(
@@ -596,11 +644,12 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                         await send_error("The approved controller is no longer connected.")
                         if client_connection:
                             c_info = await redis_client.hgetall(f"session:{code}:client_info")
+                            if c_info.get("connection_id") != client_connection:
+                                c_info = {}
                             await websocket.send_json({
                                 "type": "peer_joined",
                                 "role": "client",
-                                "caller_device_id": c_info.get("caller_device_id", "Remote Client"),
-                                "caller_name": c_info.get("caller_name", "Remote Controller"),
+                                **caller_fields(c_info),
                                 "client_connection_id": client_connection,
                             })
                         continue

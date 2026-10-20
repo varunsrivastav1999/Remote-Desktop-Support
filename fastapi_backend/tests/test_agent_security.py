@@ -14,6 +14,8 @@ and the endpoints that trusted anyone who knew a Device ID:
   9. client registration on /ws/{id}: any socket could join as client, receive host->client traffic
      and replace the approved controller
  10. GET /api/v1/sessions/request/{id}, which returned the session token to anyone with the id
+ 11. the caller identity on client registration: the Device ID and name in the host's approval prompt
+     were unverified, and any socket could replace a controller waiting for approval
 
 Run against an isolated stack, never the live one:
     BASE_URL=http://127.0.0.1:18000 python tests/test_agent_security.py
@@ -311,18 +313,25 @@ async def test_register_cannot_take_over_existing_device():
 
 # ─── Helpers for the session-gated endpoints ──────────────────────────────────
 
-async def register_client(device_id, name="Controller"):
+def client_register_message(name, token=None):
+    message = {"type": "register", "role": "client", "client_device_id": name, "caller_name": name}
+    if token is not None:
+        message["client_device_token"] = token
+    return json.dumps(message)
+
+
+async def register_client(device_id, name="Controller", token=None):
     ws = await websockets.connect(f"{WS_BASE}/ws/{device_id}")
-    await ws.send(json.dumps({"type": "register", "role": "client", "client_device_id": name, "caller_name": name}))
+    await ws.send(client_register_message(name, token))
     msgs = [await recv_json(ws)]
     assert msgs[0] == {"type": "registered", "role": "client"}, msgs
     return ws
 
 
-async def try_register_client(device_id, name="Intruder"):
+async def try_register_client(device_id, name="Intruder", token=None):
     """Try to register as client; return (socket, first reply)."""
     ws = await websockets.connect(f"{WS_BASE}/ws/{device_id}")
-    await ws.send(json.dumps({"type": "register", "role": "client", "client_device_id": name, "caller_name": name}))
+    await ws.send(client_register_message(name, token))
     return ws, await recv_json(ws)
 
 
@@ -543,13 +552,18 @@ HOST_TO_CLIENT = [
 ]
 
 
-async def peer_joined_connection(host):
-    """Return the client_connection_id of the next client peer_joined the host sees."""
+async def client_peer_joined(host):
+    """Return the next client peer_joined the host sees."""
     for _ in range(10):
         msg = await recv_json(host)
         if msg.get("type") == "peer_joined" and msg.get("role") == "client":
-            return msg["client_connection_id"]
+            return msg
     raise AssertionError("Host saw no peer_joined for the controller")
+
+
+async def peer_joined_connection(host):
+    """Return the client_connection_id of the next client peer_joined the host sees."""
+    return (await client_peer_joined(host))["client_connection_id"]
 
 
 async def test_signaling_client_traffic_only_reaches_approved_controller():
@@ -651,6 +665,70 @@ async def test_request_status_requires_request_token():
     print("✓ Only the caller that created a connection request can poll it")
 
 
+# ─── 11. Caller identity on client registration ───────────────────────────────
+
+async def test_signaling_caller_identity_is_verified():
+    device_id, device_token, _ = new_device()
+    caller_id, caller_token, _ = new_device()
+    other_id, other_token, _ = new_device()
+    host = late_host = caller = None
+    sockets = []
+    try:
+        host, reply = await register_host(device_id, device_token)
+        assert reply == {"type": "registered", "role": "host"}, reply
+        await drain(host, 0.3)
+
+        # Claiming someone's Device ID without (or with the wrong) device token is shown as unverified
+        for token in (None, "", "forged", other_token, device_token):
+            spoof = await register_client(device_id, caller_id, token)
+            sockets.append(spoof)
+            joined = await client_peer_joined(host)
+            assert joined["caller_device_id"] == caller_id and joined["caller_verified"] is False, \
+                f"Caller verified with token {token!r}: {joined}"
+
+        # The real caller proves its Device ID with its own token, replacing the unverified one
+        caller = await register_client(device_id, caller_id.lower().replace("-", ""), caller_token)
+        joined = await client_peer_joined(host)
+        assert joined["caller_verified"] is True and joined["caller_device_id"] == caller_id, joined
+        caller_conn = joined["client_connection_id"]
+
+        # A host that (re)joins late sees the waiting caller as verified too
+        late_host, reply = await register_host(device_id, device_token)
+        assert reply == {"type": "registered", "role": "host"}, reply
+        late = await drain(late_host, 0.5)
+        announced = [m for m in late if m.get("type") in ("client_waiting", "peer_joined")]
+        assert announced and all(m["caller_verified"] is True and m["caller_device_id"] == caller_id
+                                 for m in announced), late
+        await host.close()
+        host = late_host
+        late_host = None
+
+        # An unverified socket can't replace the verified caller waiting for approval
+        for name, token in ((caller_id, None), (caller_id, other_token), ("Intruder", None)):
+            intruder, reply = await try_register_client(device_id, name, token)
+            sockets.append(intruder)
+            assert reply.get("type") == "error", f"Unverified client replaced a verified one: {reply}"
+            assert await close_code(intruder) == 4409
+        assert not [m for m in await drain(host, 0.5) if m.get("type") == "peer_joined"], \
+            "Host was re-prompted for a rejected registration"
+        await host.send(json.dumps({"type": "offer", "sdp": {"type": "offer", "sdp": "v=0"},
+                                    "client_connection_id": caller_conn}))
+        got = [m.get("type") for m in await drain(caller, 0.5)]
+        assert "offer" in got and "session_credential" in got, f"Verified caller lost the room: {got}"
+
+        # Once the verified caller leaves, the room is free again (and the next caller is unverified)
+        await caller.close()
+        await asyncio.sleep(0.3)
+        caller = await register_client(device_id, "Next")
+        joined = await client_peer_joined(host)
+        assert joined["caller_verified"] is False, joined
+    finally:
+        for ws in (host, late_host, caller, *sockets):
+            if ws:
+                await ws.close()
+    print("✓ The host sees whether a caller's Device ID is verified, and a verified caller can't be displaced")
+
+
 async def main():
     await test_rest_agent_dispatch_requires_device_token()
     await test_signaling_host_requires_valid_token()
@@ -663,6 +741,7 @@ async def main():
     await test_ssh_bridge_requires_device_or_session_token()
     await test_signaling_client_traffic_only_reaches_approved_controller()
     await test_request_status_requires_request_token()
+    await test_signaling_caller_identity_is_verified()
     print("\n>>> ALL AGENT SECURITY TESTS PASSED! <<<")
 
 

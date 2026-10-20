@@ -15,7 +15,7 @@ const deviceToken = ref('')
 const agentToken = ref('')
 const deviceName = ref('')
 const deviceStatus = ref('offline') // 'offline' | 'connecting' | 'online' | 'connected'
-const incomingRequest = ref(null) // { requestId, callerDeviceId, callerName }
+const incomingRequest = ref(null) // { requestId, callerDeviceId, callerName, callerVerified }
 
 let heartbeatTimer = null
 let deviceWs = null
@@ -366,6 +366,7 @@ function triggerIncomingRequest(req = {}) {
     requestId: reqId,
     callerDeviceId: callerId,
     callerName: req.callerName || 'Remote Controller',
+    callerVerified: req.callerVerified === true,
   }
   if (onIncomingRequestCallback) {
     onIncomingRequestCallback(incomingRequest.value)
@@ -395,6 +396,8 @@ function handlePushMessage(msg) {
       requestId: reqId,
       callerDeviceId: callerId,
       callerName: msg.caller_name || 'Remote Controller',
+      // Set by the server only when the caller proved its Device ID with that device's token
+      callerVerified: msg.caller_verified === true,
     }
     if (onIncomingRequestCallback) {
       onIncomingRequestCallback(incomingRequest.value)

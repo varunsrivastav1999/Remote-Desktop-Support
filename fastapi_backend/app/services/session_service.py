@@ -230,6 +230,8 @@ async def create_connection_request(
         "request_id": request_id,
         "caller_device_id": caller_id,
         "caller_name": caller_name,
+        # /connect does not authenticate the caller; only a PIN (unattended) vouches for it
+        "caller_verified": False,
         "session_token": session_token,
         "session_code": target_id,
         "auto_accept": auto_accept,
@@ -260,6 +262,7 @@ async def create_connection_request(
                 "role": "client",
                 "caller_device_id": caller_id,
                 "caller_name": caller_name,
+                "caller_verified": False,
                 "request_id": request_id,
             },
         }),

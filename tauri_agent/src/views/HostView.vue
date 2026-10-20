@@ -74,6 +74,10 @@
           <p>
             {{ session.incomingCallerName.value || 'Remote Controller' }} ({{ session.incomingCallerId.value || 'Remote Peer' }}) is requesting to view and control this screen.
           </p>
+          <p v-if="session.incomingCallerVerified.value" class="host-approval-verified">Verified device</p>
+          <p v-else class="host-approval-unverified">
+            Unverified: this name and Device ID were not confirmed and may be fake.
+          </p>
         </div>
       </div>
       <div class="host-approval-actions">
@@ -370,6 +374,18 @@ onUnmounted(() => {
   margin: 0;
   font-size: 0.85rem;
   color: var(--ad-text-muted);
+}
+
+.host-approval-info p.host-approval-verified {
+  margin-top: 4px;
+  font-weight: 600;
+  color: var(--ad-status-online);
+}
+
+.host-approval-info p.host-approval-unverified {
+  margin-top: 4px;
+  font-weight: 600;
+  color: var(--color-accent-red);
 }
 
 .host-approval-actions {

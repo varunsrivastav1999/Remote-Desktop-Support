@@ -5,6 +5,9 @@ import { useScreenShare } from './useScreenShare.js'
 import { useSignaling } from './useSignaling.js'
 import { useDevice } from './useDevice.js'
 
+// How long a PIN-verified unattended request waits for its caller to join the signaling room
+const UNATTENDED_GRANT_MS = 60000
+
 function rtcConfiguration(settings) {
   const iceServers = getDefaultIceServers(settings)
   const configuration = { iceServers }
@@ -28,6 +31,8 @@ function createHostSession() {
   const pendingController = ref(false)
   const incomingCallerName = ref('')
   const incomingCallerId = ref('')
+  // True only when the server verified the caller's device token; otherwise the id and name are claims
+  const incomingCallerVerified = ref(false)
   const controlEnabled = ref(false)
   const chatMessages = ref([])
   const unreadCount = ref(0)
@@ -43,6 +48,8 @@ function createHostSession() {
   // Signaling connection of the controller the host is asked to approve; the offer names it so
   // approval can't pass to a different socket that joined in the meantime.
   let pendingClientConnection = null
+  // A PIN-verified unattended request pre-approves exactly one verified connection from that caller
+  let unattendedGrant = null // { callerId, expires }
   let onlinePromise = null
   let currentIncomingUpload = null
   let agentPollTimer = null
@@ -136,17 +143,29 @@ function createHostSession() {
           console.warn('[HostSession] Ignored incoming request from self:', req.callerDeviceId)
           return
         }
+        if (state.value === 'connecting' || state.value === 'connected') {
+          // A late push for the controller just approved (e.g. unattended); the server refuses others
+          device.clearIncomingRequest?.()
+          return
+        }
         pendingController.value = true
         incomingCallerName.value = req.callerName
         incomingCallerId.value = req.callerDeviceId
+        incomingCallerVerified.value = req.callerVerified === true
         state.value = 'approval'
         statusText.value = `Incoming request from ${req.callerName} (${req.callerDeviceId})`
       })
 
       // Set listener for unattended session start
       device.setOnSessionStart(async (msg) => {
-        statusText.value = `Unattended session connected from ${msg.caller_device_id}`
-        await allowController(true)
+        if (!msg.caller_device_id) return
+        unattendedGrant = { callerId: msg.caller_device_id, expires: Date.now() + UNATTENDED_GRANT_MS }
+        statusText.value = `Unattended access granted to ${msg.caller_device_id}. Waiting for that device to connect...`
+        // The caller may already be waiting in the room
+        if (pendingController.value && takeUnattendedGrant(incomingCallerId.value, incomingCallerVerified.value, pendingClientConnection)) {
+          statusText.value = `Unattended session connected from ${msg.caller_device_id}`
+          await allowController(true)
+        }
       })
 
       signaling.onMessage(handleSignalingMessage)
@@ -237,6 +256,16 @@ function createHostSession() {
         pendingClientConnection = message.client_connection_id || pendingClientConnection
         incomingCallerName.value = message.caller_name || 'Remote Controller'
         incomingCallerId.value = callerId
+        incomingCallerVerified.value = message.caller_verified === true
+
+        // Only a verified caller holding an unattended (PIN) grant skips the prompt. A screen share
+        // that is already running approves nobody: every other controller is asked for again.
+        if (takeUnattendedGrant(callerId, incomingCallerVerified.value, message.client_connection_id)) {
+          statusText.value = `Unattended session connected from ${callerId}`
+          await allowController(true)
+          return
+        }
+
         state.value = 'approval'
         statusText.value = `A remote controller (${incomingCallerName.value}) is requesting access.`
 
@@ -245,13 +274,8 @@ function createHostSession() {
           requestId: reqId,
           callerDeviceId: incomingCallerId.value,
           callerName: incomingCallerName.value,
+          callerVerified: incomingCallerVerified.value,
         })
-
-        // If screen is ALREADY shared, automatically send offer immediately
-        if (screenShare.localStream.value) {
-          console.log('[HostSession] Screen stream active, automatically starting WebRTC offer...')
-          await allowController(true)
-        }
       } else if (message.type === 'answer' && peerConnection) {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp))
         while (queuedIce.length) {
@@ -278,6 +302,17 @@ function createHostSession() {
     } catch (signalError) {
       error.value = `Connection negotiation failed: ${signalError.message}`
     }
+  }
+
+  function takeUnattendedGrant(callerId, verified, clientConnection) {
+    const grant = unattendedGrant
+    if (!grant || Date.now() > grant.expires) {
+      unattendedGrant = null
+      return false
+    }
+    if (!verified || !clientConnection || callerId !== grant.callerId) return false
+    unattendedGrant = null
+    return true
   }
 
   async function allowController(skipScreenCheck = false) {
@@ -854,6 +889,7 @@ function createHostSession() {
     pendingController: readonly(pendingController),
     incomingCallerName: readonly(incomingCallerName),
     incomingCallerId: readonly(incomingCallerId),
+    incomingCallerVerified: readonly(incomingCallerVerified),
     controlEnabled: readonly(controlEnabled),
     signalingConnected: signaling.isConnected,
     hasAgent: readonly(hasAgent),

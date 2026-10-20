@@ -87,6 +87,11 @@
             <div class="caller-card">
               <span class="caller-name">{{ incomingCallerName }}</span>
               <span class="caller-id font-mono">Device ID: {{ incomingCallerId }}</span>
+              <span v-if="incomingCallerVerified" class="caller-verified">Verified device</span>
+              <span v-else class="caller-unverified">
+                Unverified: this name and Device ID were not confirmed and may be fake.
+                Only accept if you are expecting this connection.
+              </span>
             </div>
             <p class="incoming-sub">
               This computer requests access to view your screen and provide remote support.
@@ -275,6 +280,9 @@ const hasIncomingRequest = computed(() => {
 })
 const incomingCallerName = computed(() => device.incomingRequest.value?.callerName || hostSession.incomingCallerName.value || 'Remote Controller')
 const incomingCallerId = computed(() => device.incomingRequest.value?.callerDeviceId || hostSession.incomingCallerId.value || 'Remote Peer')
+const incomingCallerVerified = computed(() => device.incomingRequest.value
+  ? device.incomingRequest.value.callerVerified === true
+  : hostSession.incomingCallerVerified.value)
 
 const sessionCode = ref('')
 const isLoading = ref(false)
@@ -762,6 +770,17 @@ onMounted(async () => {
   font-size: 0.9rem;
   color: var(--ad-accent);
   letter-spacing: 0.05em;
+}
+.caller-verified {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ad-status-online);
+}
+.caller-unverified {
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-accent-red);
 }
 .incoming-sub {
   color: var(--ad-text-muted);
