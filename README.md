@@ -129,22 +129,36 @@ Remote Desktop Support supports two host modes:
 ### Mode A: Browser Host + Native Companion Agent (Recommended for Web Users)
 When sharing a screen through a web browser (Google Chrome, Microsoft Edge, Mozilla Firefox), run the lightweight companion daemon on the host computer to enable native OS mouse clicks, drag-and-drop, keyboard input, terminal commands, and file browsing.
 
-The web app displays a **1-Click Copy Command** directly on the **Share This Desk** screen with your Device ID and agent token pre-filled (the token is masked on screen; the **Copy** button copies the full command):
+The **Share This Desk** screen shows a one-time install command for macOS, Windows and Linux with your Device ID and agent token pre-filled (the token is masked on screen; the **Copy** button copies the full command). Run it once: the agent copies itself to a per-user folder, remembers the server, Device ID and token, and starts by itself at every login, reconnecting whenever the server or network comes back.
 
 ```bash
-# 1-Click Universal Launch Command (Linux, macOS, Windows):
-curl -sSL https://webmaster-meal-classroom-colony.trycloudflare.com/agent.py | python3 - --device <YOUR_DEVICE_ID> --token <AGENT_TOKEN>
+# macOS / Linux: install once
+curl -sSL https://<your-server>/agent.py | python3 - --install --server https://<your-server> --device <YOUR_DEVICE_ID> --token <AGENT_TOKEN>
 
-# Or if you already have the repository cloned:
-python3 scripts/local_agent.py --device <YOUR_DEVICE_ID> --token <AGENT_TOKEN>
+# Windows: the Host screen gives a PowerShell command that finds py/python (python3 is often missing)
+
+# Remove it again
+python3 "<install folder>/agent.py" --uninstall
+
+# Run once in the foreground instead of installing (or from a cloned repository)
+python3 scripts/local_agent.py --server https://<your-server> --device <YOUR_DEVICE_ID> --token <AGENT_TOKEN>
 ```
 
-- **Agent authentication:** The server accepts an agent for a Device ID only with that device's agent token, which `/api/v1/devices/register` returns as `agent_token`. The token is derived from the device token, so it changes whenever the device registers with a new token, and it cannot be used to register as the host. You can also pass it in the `AGENT_TOKEN` environment variable. An agent started without a valid token exits instead of connecting.
+| OS | Install folder | Starts at login via |
+|----|----------------|---------------------|
+| macOS | `~/Library/Application Support/RemoteDesktopSupport` | LaunchAgent `~/Library/LaunchAgents/com.remotedesktopsupport.agent.plist` |
+| Windows | `%LOCALAPPDATA%\RemoteDesktopSupport` | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `RemoteDesktopSupportAgent` (no admin rights needed) |
+| Linux | `~/.local/share/remote-desktop-support` | systemd user unit `remote-desktop-support-agent.service`, or an XDG autostart entry without systemd |
+
+- **Install once per browser:** a browser normally gives each tab its own Device ID. Copying the install command links this browser's Device ID to the installed agent; later tabs reuse it while no other tab holds it (Web Locks, so it needs HTTPS or localhost).
+- **One agent per user account:** a second agent exits instead of injecting input twice. An installed agent whose token is rejected keeps waiting, and running the install command again relinks it.
+
+- **Agent authentication:** The server accepts an agent for a Device ID only with that device's agent token, which `/api/v1/devices/register` returns as `agent_token`. The token is derived from the device token, so it changes whenever the device registers with a new token, and it cannot be used to register as the host. You can also pass it in the `AGENT_TOKEN` environment variable. An agent started by hand without a valid token exits instead of connecting.
 - **No local ports:** The agent opens no listening sockets. Mouse, keyboard, terminal, and file requests reach it only through its authenticated server connection, and only the authenticated host can issue terminal and file requests.
 
 - **Outbound WebSocket Tunneling:** The companion agent connects via persistent outbound WebSocket directly to the signaling server (`wss://.../ws/agent/{device_id}`). This bypasses all browser Mixed Content and Private Network Access (PNA) restrictions, working seamlessly across firewalls and NAT.
 - **Linux (Ubuntu / Debian / Fedora / Arch):** Automatically detects and uses `pynput` or native `xdotool` (`sudo apt-get install -y xdotool`). Supports single clicks, right clicks, double clicks, dragging, scrolling, and keyboard shortcuts.
-- **macOS:** Grant *Screen Recording* and *Accessibility* permissions to your Terminal / Python process in **System Settings → Privacy & Security → Accessibility**.
+- **macOS:** Grant *Accessibility* to Python in **System Settings → Privacy & Security → Accessibility** (the installed agent asks for it; a run in Terminal needs it for Terminal).
 - **Windows:** Supports all mouse and keyboard actions out of the box via `pynput` and `user32.dll`.
 
 ### Mode B: Native Tauri Desktop Application

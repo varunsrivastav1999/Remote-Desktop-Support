@@ -36,16 +36,34 @@
           <span>{{ session.hasAgent.value ? 'Native Remote Control Active (Clicks, Keys & Terminal Enabled)' : 'Remote Control Companion Offline' }}</span>
         </div>
 
-        <!-- 1-Click Launch Command for Browser Host -->
+        <!-- One-time companion install command for Browser Host -->
         <div v-if="!session.hasAgent.value && session.sessionCode.value" class="agent-launcher-box">
-          <p class="agent-launcher-title">To enable mouse, keyboard, and terminal control on this computer:</p>
+          <p class="agent-launcher-title">To enable mouse, keyboard, and terminal control on this computer, install the companion once:</p>
+          <div class="agent-launcher-tabs" role="tablist">
+            <button
+              v-for="option in agentOsOptions"
+              :key="option.id"
+              role="tab"
+              :aria-selected="agentOs === option.id"
+              :class="['agent-launcher-tab', { 'agent-launcher-tab--active': agentOs === option.id }]"
+              @click="agentOs = option.id"
+            >{{ option.label }}</button>
+          </div>
           <div class="agent-launcher-command">
             <code class="font-mono">{{ agentCommand }}</code>
             <button class="btn btn--xs btn--secondary" @click="copyAgentCommand">
               {{ copiedCmd ? 'Copied!' : 'Copy' }}
             </button>
           </div>
-          <p class="agent-launcher-hint">Run this in your terminal. It connects automatically to this desk.</p>
+          <p class="agent-launcher-hint">{{ agentHint }}</p>
+          <p v-if="otherTabHasCompanion" class="agent-launcher-hint agent-launcher-hint--warn">
+            The companion installed on this computer is linked to {{ device.installedHostId.value }}, which is open in another tab.
+            Install again here to link it to this desk instead.
+          </p>
+          <label class="agent-launcher-once">
+            <input v-model="runOnce" type="checkbox" />
+            Run once without installing
+          </label>
         </div>
 
         <button v-if="!session.localStream.value" class="btn btn--primary btn--lg" @click="beginShare">
@@ -121,22 +139,63 @@ const statusDot = computed(() => {
 })
 
 const copiedCmd = ref(false)
+const agentOsOptions = [
+  { id: 'macos', label: 'macOS' },
+  { id: 'windows', label: 'Windows' },
+  { id: 'linux', label: 'Linux' },
+]
+function detectAgentOs() {
+  const p = (typeof navigator !== 'undefined'
+    ? (navigator.userAgentData?.platform || navigator.platform || '')
+    : '').toLowerCase()
+  if (p.includes('win')) return 'windows'
+  if (p.includes('linux')) return 'linux'
+  return 'macos'
+}
+const agentOs = ref(detectAgentOs())
+const runOnce = ref(false)
+
 function buildAgentCommand(token) {
   // The server this page talks to right now. Quick tunnel addresses change on every restart, so the
   // agent is told where to connect instead of relying on the address baked into agent.py.
   const server = new URL(apiUrl('/agent.py'), window.location.href).origin
   const code = session.sessionCode.value || ''
-  return `curl -sSL ${server}/agent.py | python3 - --device ${code} --token ${token} --server ${server}`
+  const args = `${runOnce.value ? '' : '--install '}--server ${server} --device ${code} --token ${token}`
+  if (agentOs.value !== 'windows') {
+    return `curl -sSL ${server}/agent.py | python3 - ${args}`
+  }
+  // Windows often has no python3 on PATH, only the py launcher or python, or the Store stub
+  // that fails when run, so use the first interpreter that actually runs
+  return [
+    `$s='${server}'`,
+    '[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor 3072',
+    '$f="$env:TEMP\\remote-desktop-agent.py"',
+    'iwr -UseBasicParsing "$s/agent.py" -OutFile $f',
+    "$py=(Get-Command py,python,python3 -CommandType Application -EA 0|?{& $_.Source -c 'import sys' *>$null; $LASTEXITCODE -eq 0}|select -First 1).Source",
+    `if(!$py){Write-Host 'Python 3 is required. Install it with: winget install -e --id Python.Python.3.12 and run this again.'}else{& $py $f ${args}}`,
+  ].join('; ')
 }
 // The screen may be shared with the controller, so only the copied command holds the token
 const agentCommand = computed(() => buildAgentCommand('••••••••'))
+const agentHint = computed(() => {
+  const shell = agentOs.value === 'windows' ? 'PowerShell' : 'Terminal'
+  if (runOnce.value) return `Run this in ${shell}. It controls this desk until you close it.`
+  const mac = agentOs.value === 'macos'
+    ? ' When macOS asks, allow Accessibility for Python so clicks and keys work.'
+    : ''
+  return `Run this once in ${shell}. The companion then starts by itself at every login and reconnects to this desk.${mac}`
+})
+const otherTabHasCompanion = computed(() =>
+  !!device.installedHostId.value && device.installedHostId.value !== session.sessionCode.value
+)
 
-function copyAgentCommand() {
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(buildAgentCommand(device.agentToken.value))
-    copiedCmd.value = true
-    setTimeout(() => { copiedCmd.value = false }, 2500)
-  }
+async function copyAgentCommand() {
+  if (!navigator.clipboard) return
+  // The installed agent stays linked to this Device ID, so later tabs in this browser reuse it
+  if (!runOnce.value) await device.pinInstalledHost()
+  await navigator.clipboard.writeText(buildAgentCommand(device.agentToken.value))
+  copiedCmd.value = true
+  setTimeout(() => { copiedCmd.value = false }, 2500)
 }
 
 watch(() => session.localStream.value, (stream, previousStream) => {
@@ -466,6 +525,8 @@ onUnmounted(() => {
   padding: 12px 14px;
   margin-bottom: 12px;
   text-align: left;
+  align-self: stretch;
+  min-width: 0;
 }
 
 .agent-launcher-title {
@@ -557,5 +618,41 @@ onUnmounted(() => {
   .host-approval-actions > .btn {
     flex: 1;
   }
+}
+
+.agent-launcher-hint--warn {
+  color: #ffb74d;
+}
+
+.agent-launcher-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.agent-launcher-tab {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+}
+
+.agent-launcher-tab--active {
+  background: rgba(100, 181, 246, 0.15);
+  border-color: rgba(100, 181, 246, 0.5);
+  color: #e0e0e0;
+}
+
+.agent-launcher-once {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
 }
 </style>

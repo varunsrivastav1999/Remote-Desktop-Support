@@ -14,6 +14,8 @@ const deviceToken = ref('')
 // and returns it on every registration, so it is never stored.
 const agentToken = ref('')
 const deviceName = ref('')
+// Device ID the companion agent installed on this computer is linked to ('' when none)
+const installedHostId = ref('')
 const deviceStatus = ref('offline') // 'offline' | 'connecting' | 'online' | 'connected'
 const incomingRequest = ref(null) // { requestId, callerDeviceId, callerName, callerVerified }
 
@@ -37,6 +39,71 @@ function getDeviceStorage() {
     return localStorage
   }
   return sessionStorage
+}
+
+// Each browser tab normally gets its own Device ID, but an installed companion agent is linked
+// to one. The first tab that takes that ID's Web Lock hosts with it; other tabs keep their own.
+const INSTALLED_HOST_KEY = 'remote_support_installed_host'
+let installedHostClaim = null
+let lockedHostId = ''
+
+function readInstalledHost() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(INSTALLED_HOST_KEY) || 'null')
+    return saved?.device_id && saved?.auth_token ? saved : null
+  } catch (_) {
+    return null
+  }
+}
+
+function forgetInstalledHost(id) {
+  if (readInstalledHost()?.device_id === id) localStorage.removeItem(INSTALLED_HOST_KEY)
+  if (installedHostId.value === id) installedHostId.value = ''
+}
+
+function holdHostLock(id) {
+  if (lockedHostId === id) return Promise.resolve(true)
+  if (typeof navigator === 'undefined' || !navigator.locks) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    navigator.locks.request(`remote-support-host:${id}`, { ifAvailable: true }, (lock) => {
+      resolve(!!lock)
+      if (!lock) return undefined
+      lockedHostId = id
+      // Held until this tab closes or reloads
+      return new Promise(() => {})
+    }).catch(() => resolve(false))
+  })
+}
+
+async function claimInstalledHost() {
+  if (isNativeApp() || typeof window === 'undefined') return
+  const pinned = readInstalledHost()
+  if (!pinned) return
+  installedHostId.value = pinned.device_id
+  const storage = getDeviceStorage()
+  if (await holdHostLock(pinned.device_id)) {
+    storage.setItem(DEVICE_ID_KEY, pinned.device_id)
+    storage.setItem(DEVICE_TOKEN_KEY, pinned.auth_token)
+    storage.setItem('rs_tab_owner', getTabSessionId())
+  } else if (storage.getItem(DEVICE_ID_KEY) === pinned.device_id) {
+    // Another tab hosts with it now; two tabs must never share a Device ID
+    storage.removeItem(DEVICE_ID_KEY)
+    storage.removeItem(DEVICE_TOKEN_KEY)
+  }
+}
+
+/**
+ * Link this tab's Device ID to the companion agent about to be installed on this computer.
+ */
+async function pinInstalledHost() {
+  if (isNativeApp() || !deviceId.value || !deviceToken.value) return false
+  if (!(await holdHostLock(deviceId.value))) return false
+  localStorage.setItem(INSTALLED_HOST_KEY, JSON.stringify({
+    device_id: deviceId.value,
+    auth_token: deviceToken.value,
+  }))
+  installedHostId.value = deviceId.value
+  return true
 }
 
 function hostPlatform() {
@@ -106,6 +173,8 @@ function saveCredentials(id, token, name, agentTok) {
  * Register or recover permanent Device ID with backend
  */
 async function registerDevice() {
+  if (!installedHostClaim) installedHostClaim = claimInstalledHost()
+  await installedHostClaim
   loadSavedCredentials()
   deviceStatus.value = 'connecting'
   const settings = loadNetworkSettings()
@@ -148,6 +217,7 @@ async function registerDevice() {
 
       if (response.status === 400 || response.status === 422) {
         // Clear stale credentials from storage and memory
+        if (deviceId.value) forgetInstalledHost(deviceId.value)
         const storage = getDeviceStorage()
         storage.removeItem(DEVICE_ID_KEY)
         storage.removeItem(LEGACY_ID_KEY)
@@ -493,6 +563,7 @@ async function rejectRequest(requestId) {
  * Regenerate Device ID for this browser tab or app
  */
 async function resetDeviceId() {
+  if (deviceId.value && lockedHostId === deviceId.value) forgetInstalledHost(deviceId.value)
   const storage = getDeviceStorage()
   storage.removeItem(DEVICE_ID_KEY)
   storage.removeItem(DEVICE_TOKEN_KEY)
@@ -537,6 +608,8 @@ export function useDevice() {
     deviceId: readonly(deviceId),
     deviceToken: readonly(deviceToken),
     agentToken: readonly(agentToken),
+    installedHostId: readonly(installedHostId),
+    pinInstalledHost,
     deviceName,
     deviceStatus: readonly(deviceStatus),
     incomingRequest: readonly(incomingRequest),

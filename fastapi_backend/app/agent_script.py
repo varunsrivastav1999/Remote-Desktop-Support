@@ -539,14 +539,6 @@ async def run_websocket_client(server_url, device_id, token):
                 # The first message authenticates this agent for the Device ID
                 await ws.send(json.dumps({**meta, "token": token}))
 
-                print("=" * 65)
-                print(f" 🟢 NATIVE AGENT CONNECTED AND ACTIVE FOR DEVICE {device_id}!")
-                print(f" • Remote System: {meta['username']}@{meta['hostname']} ({meta['os_name']})")
-                print(f" • Detected IP: {meta['primary_ip']} | SSH: {'Listening' if meta['ssh_running'] else 'Not detected'}")
-                print(" • Full OS mouse, keyboard, terminal, and file transfer enabled.")
-                print("=" * 65)
-                reconnect_delay = 1
-
                 async for message in ws:
                     try:
                         data = json.loads(message)
@@ -560,7 +552,16 @@ async def run_websocket_client(server_url, device_id, token):
                         mtype = data.get("type")
                         req_id = data.get("req_id")
 
-                        if mtype == "take_control":
+                        if mtype == "agent_connected":
+                            # Sent once the server has accepted the token
+                            print("=" * 65)
+                            print(f" 🟢 NATIVE AGENT CONNECTED AND ACTIVE FOR DEVICE {device_id}!")
+                            print(f" • Remote System: {meta['username']}@{meta['hostname']} ({meta['os_name']})")
+                            print(f" • Detected IP: {meta['primary_ip']} | SSH: {'Listening' if meta['ssh_running'] else 'Not detected'}")
+                            print(" • Full OS mouse, keyboard, terminal, and file transfer enabled.")
+                            print("=" * 65)
+                            reconnect_delay = 1
+                        elif mtype == "take_control":
                             control_active = True
                             await ws.send(json.dumps({"type": "reply", "reply_to": "take_control", "req_id": req_id, "status": "granted"}))
                             await ws.send(json.dumps({"type": "control_granted"}))
@@ -626,6 +627,442 @@ async def run_websocket_client(server_url, device_id, token):
 
 
 # ═════════════════════════════════════════════════════════════
+# Install Once: start automatically at login
+# ═════════════════════════════════════════════════════════════
+
+SERVICE_LABEL = "com.remotedesktopsupport.agent"
+SYSTEMD_UNIT = "remote-desktop-support-agent.service"
+WINDOWS_RUN_VALUE = "RemoteDesktopSupportAgent"
+WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+# An installed agent with a rejected token keeps waiting, so re-running --install relinks it
+INSTALLED_AUTH_RETRY_SECONDS = 60
+
+
+def install_dir():
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/RemoteDesktopSupport")
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        return os.path.join(base, "RemoteDesktopSupport")
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "remote-desktop-support")
+
+
+def installed_paths():
+    root = install_dir()
+    return {
+        "dir": root,
+        "script": os.path.join(root, "agent.py"),
+        "config": os.path.join(root, "config.json"),
+        "log": os.path.join(root, "agent.log"),
+        "lock": os.path.join(root, "agent.lock"),
+        "pid": os.path.join(root, "agent.pid"),
+        "plist": os.path.expanduser(f"~/Library/LaunchAgents/{SERVICE_LABEL}.plist"),
+        "unit": os.path.join(
+            os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "systemd", "user", SYSTEMD_UNIT
+        ),
+        "autostart": os.path.join(
+            os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "autostart",
+            "remote-desktop-support-agent.desktop",
+        ),
+    }
+
+
+def load_installed_config():
+    try:
+        with open(installed_paths()["config"], "r", encoding="utf-8") as f:
+            config = json.load(f)
+        if config.get("server") and config.get("device_id") and config.get("token"):
+            return config
+    except Exception:
+        pass
+    return None
+
+
+def write_private_file(path, content):
+    """Write a file only this user can read (it may hold the agent token)."""
+    tmp = f"{path}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp, path)
+
+
+def fetch_agent_source(server_url):
+    """This script's own source; piped into python3 it has no file, so fetch it from the server."""
+    own = globals().get("__file__")
+    if own and os.path.isfile(own):
+        with open(own, "r", encoding="utf-8") as f:
+            return f.read()
+    import urllib.request
+    with urllib.request.urlopen(f"{server_url.rstrip('/')}/agent.py", timeout=30) as resp:
+        source = resp.read().decode("utf-8")
+    compile(source, "agent.py", "exec")
+    return source
+
+
+def background_python():
+    """Interpreter for the installed agent; on Windows pythonw.exe so no console window opens."""
+    exe = sys.executable
+    if sys.platform == "win32":
+        candidate = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.exists(candidate):
+            return candidate
+    return exe
+
+
+def run_quiet(cmd):
+    try:
+        return subprocess.run(cmd, check=False, capture_output=True, text=True)
+    except Exception as e:
+        return subprocess.CompletedProcess(cmd, 1, "", str(e))
+
+
+class SingleInstance:
+    """One companion agent per user account, so input is never injected twice."""
+
+    def __init__(self, path):
+        self.path = path
+        self.fd = None
+
+    def acquire(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            os.close(self.fd)
+            self.fd = None
+            return False
+
+    def release(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def stop_running_agent(paths):
+    """Stop an agent started without a service manager (Windows Run key or XDG autostart)."""
+    probe = SingleInstance(paths["lock"])
+    if probe.acquire():
+        probe.release()
+        return
+    try:
+        with open(paths["pid"], "r") as f:
+            pid = int(f.read().strip())
+    except Exception:
+        return
+    if sys.platform == "win32":
+        run_quiet(["taskkill", "/PID", str(pid), "/F"])
+    else:
+        import signal
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    import time
+    for _ in range(20):
+        if probe.acquire():
+            probe.release()
+            return
+        time.sleep(0.25)
+
+
+def install_macos(paths, python_exe):
+    import plistlib
+    plist = {
+        "Label": SERVICE_LABEL,
+        "ProgramArguments": [python_exe, paths["script"], "--run-installed"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 10,
+        "ProcessType": "Interactive",
+        # Input injection needs the logged-in GUI session
+        "LimitLoadToSessionType": "Aqua",
+        # launchd starts services with a bare PATH and no SHELL, which the remote terminal needs
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1",
+            "PATH": os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "SHELL": os.environ.get("SHELL") or "/bin/zsh",
+        },
+        "StandardOutPath": paths["log"],
+        "StandardErrorPath": paths["log"],
+    }
+    os.makedirs(os.path.dirname(paths["plist"]), exist_ok=True)
+    with open(paths["plist"], "wb") as f:
+        plistlib.dump(plist, f)
+    domain = f"gui/{os.getuid()}"
+    run_quiet(["launchctl", "bootout", f"{domain}/{SERVICE_LABEL}"])
+    result = run_quiet(["launchctl", "bootstrap", domain, paths["plist"]])
+    if result.returncode != 0:
+        result = run_quiet(["launchctl", "load", "-w", paths["plist"]])
+    if result.returncode != 0:
+        raise RuntimeError(f"launchctl could not start the agent: {(result.stderr or result.stdout).strip()}")
+    return f"LaunchAgent {paths['plist']}"
+
+
+def uninstall_macos(paths):
+    run_quiet(["launchctl", "bootout", f"gui/{os.getuid()}/{SERVICE_LABEL}"])
+    if os.path.exists(paths["plist"]):
+        run_quiet(["launchctl", "unload", "-w", paths["plist"]])
+        os.remove(paths["plist"])
+
+
+def install_linux(paths, python_exe):
+    has_systemd = shutil.which("systemctl") and run_quiet(["systemctl", "--user", "show-environment"]).returncode == 0
+    if has_systemd:
+        unit = "\n".join([
+            "[Unit]",
+            "Description=Remote Desktop Support companion agent",
+            "After=graphical-session.target network-online.target",
+            "StartLimitIntervalSec=0",
+            "",
+            "[Service]",
+            f'ExecStart="{python_exe}" "{paths["script"]}" --run-installed',
+            "Restart=always",
+            "RestartSec=10",
+            "Environment=PYTHONUNBUFFERED=1",
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            "",
+        ])
+        os.makedirs(os.path.dirname(paths["unit"]), exist_ok=True)
+        with open(paths["unit"], "w", encoding="utf-8") as f:
+            f.write(unit)
+        # Lets the agent start now with this session's display; at later logins the desktop imports it
+        run_quiet(["systemctl", "--user", "import-environment", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY"])
+        run_quiet(["systemctl", "--user", "daemon-reload"])
+        result = run_quiet(["systemctl", "--user", "enable", SYSTEMD_UNIT])
+        if result.returncode == 0:
+            result = run_quiet(["systemctl", "--user", "restart", SYSTEMD_UNIT])
+        if result.returncode != 0:
+            raise RuntimeError(f"systemctl could not start the agent: {(result.stderr or result.stdout).strip()}")
+        return f"systemd user unit {paths['unit']}"
+
+    # No systemd user session: start with the desktop through XDG autostart
+    entry = "\n".join([
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Remote Desktop Support Agent",
+        f'Exec="{python_exe}" "{paths["script"]}" --run-installed',
+        "NoDisplay=true",
+        "X-GNOME-Autostart-enabled=true",
+        "",
+    ])
+    os.makedirs(os.path.dirname(paths["autostart"]), exist_ok=True)
+    with open(paths["autostart"], "w", encoding="utf-8") as f:
+        f.write(entry)
+    stop_running_agent(paths)
+    start_detached(paths, python_exe)
+    return f"autostart entry {paths['autostart']}"
+
+
+def uninstall_linux(paths):
+    if shutil.which("systemctl"):
+        run_quiet(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT])
+    for key in ("unit", "autostart"):
+        if os.path.exists(paths[key]):
+            os.remove(paths[key])
+    if shutil.which("systemctl"):
+        run_quiet(["systemctl", "--user", "daemon-reload"])
+    stop_running_agent(paths)
+
+
+def windows_command_line(python_exe, script):
+    return subprocess.list2cmdline([python_exe, script, "--run-installed"])
+
+
+def install_windows(paths, python_exe):
+    # The per-user Run key needs no administrator rights and starts in the interactive session
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, WINDOWS_RUN_VALUE, 0, winreg.REG_SZ, windows_command_line(python_exe, paths["script"]))
+    stop_running_agent(paths)
+    start_detached(paths, python_exe)
+    return f"login entry HKCU\\{WINDOWS_RUN_KEY}\\{WINDOWS_RUN_VALUE}"
+
+
+def uninstall_windows(paths):
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, WINDOWS_RUN_VALUE)
+    except OSError:
+        pass
+    stop_running_agent(paths)
+
+
+def start_detached(paths, python_exe):
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([python_exe, paths["script"], "--run-installed"], **kwargs)
+
+
+def install_agent(server_url, device_id, token):
+    paths = installed_paths()
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        print("[!] The 'websockets' package could not be installed for this Python:")
+        print(f"    {sys.executable} -m pip install --user websockets pynput")
+        sys.exit(1)
+
+    os.makedirs(paths["dir"], exist_ok=True)
+    try:
+        source = fetch_agent_source(server_url)
+    except Exception as e:
+        print(f"[!] Could not download the agent from {server_url}: {e}")
+        sys.exit(1)
+    with open(paths["script"], "w", encoding="utf-8") as f:
+        f.write(source)
+    write_private_file(paths["config"], json.dumps(
+        {"server": server_url.rstrip("/"), "device_id": device_id, "token": token}, indent=2
+    ))
+
+    python_exe = background_python()
+    try:
+        if sys.platform == "darwin":
+            where = install_macos(paths, python_exe)
+        elif sys.platform == "win32":
+            where = install_windows(paths, python_exe)
+        else:
+            where = install_linux(paths, python_exe)
+    except Exception as e:
+        print(f"[!] Installed the files but could not register the login service: {e}")
+        sys.exit(1)
+
+    print("=" * 65)
+    print(f" ✅ Companion agent installed for {device_id}")
+    print(f" • Starts automatically at login ({where})")
+    print(f" • Files and log: {paths['dir']}")
+    if sys.platform == "darwin":
+        print(" • macOS asks to allow Accessibility for Python. Allow it in System Settings >")
+        print("   Privacy & Security > Accessibility so remote mouse and keyboard work:")
+        print(f"   {os.path.realpath(python_exe)}")
+    print(" • To remove it: python3 \"%s\" --uninstall" % paths["script"])
+    print("=" * 65)
+
+
+def uninstall_agent():
+    paths = installed_paths()
+    if sys.platform == "darwin":
+        uninstall_macos(paths)
+    elif sys.platform == "win32":
+        uninstall_windows(paths)
+    else:
+        uninstall_linux(paths)
+    names = ["config", "script", "pid", "log"]
+    probe = SingleInstance(paths["lock"])
+    if probe.acquire():
+        # A manually started agent still holds it otherwise; deleting it would allow a second agent
+        probe.release()
+        names.append("lock")
+    for key in names:
+        try:
+            os.remove(paths[key])
+        except OSError:
+            pass
+    try:
+        os.rmdir(paths["dir"])
+    except OSError:
+        pass
+    print("[*] Companion agent uninstalled; it no longer starts at login.")
+
+
+def request_macos_accessibility():
+    """Ask macOS to list this Python under Accessibility; without it injected input is dropped."""
+    try:
+        import ctypes, ctypes.util
+        ax = ctypes.cdll.LoadLibrary(ctypes.util.find_library("ApplicationServices"))
+        cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
+        ax.AXIsProcessTrusted.restype = ctypes.c_bool
+        if ax.AXIsProcessTrusted():
+            return True
+        cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+        cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+        cf.CFDictionaryCreate.restype = ctypes.c_void_p
+        cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long,
+                                          ctypes.c_void_p, ctypes.c_void_p]
+        ax.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
+        ax.AXIsProcessTrustedWithOptions.argtypes = [ctypes.c_void_p]
+        key = cf.CFStringCreateWithCString(None, b"AXTrustedCheckOptionPrompt", 0x08000100)
+        true_value = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue")
+        keys = (ctypes.c_void_p * 1)(key)
+        values = (ctypes.c_void_p * 1)(true_value.value)
+        options = cf.CFDictionaryCreate(
+            None, keys, values, 1,
+            ctypes.addressof(ctypes.c_char.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")),
+            ctypes.addressof(ctypes.c_char.in_dll(cf, "kCFTypeDictionaryValueCallBacks")),
+        )
+        return bool(ax.AXIsProcessTrustedWithOptions(options))
+    except Exception:
+        return None
+
+
+def wait_for_linux_display():
+    """systemd may start the unit before the desktop exports DISPLAY; pick it up, then restart."""
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or not shutil.which("systemctl"):
+        return
+    import time
+    for _ in range(24):
+        env = run_quiet(["systemctl", "--user", "show-environment"]).stdout or ""
+        found = {}
+        for line in env.splitlines():
+            name, _, value = line.partition("=")
+            if name in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY") and value:
+                found[name] = value
+        if found.get("DISPLAY") or found.get("WAYLAND_DISPLAY"):
+            os.environ.update(found)
+            # Input drivers bind to the display at import time
+            os.execv(sys.executable, [sys.executable, *sys.argv])
+        time.sleep(5)
+    print("[!] No graphical session found; remote mouse and keyboard stay off until the next login.")
+
+
+def run_installed():
+    paths = installed_paths()
+    if sys.stdout is None or sys.platform == "win32":
+        # pythonw.exe has no console, so keep a log next to the config
+        try:
+            if os.path.exists(paths["log"]) and os.path.getsize(paths["log"]) > 1024 * 1024:
+                os.remove(paths["log"])
+            log = open(paths["log"], "a", buffering=1, encoding="utf-8")
+            sys.stdout = sys.stderr = log
+        except Exception:
+            pass
+    if sys.platform.startswith("linux"):
+        wait_for_linux_display()
+    if sys.platform == "darwin" and request_macos_accessibility() is False:
+        print("[!] Accessibility is not allowed for this Python, so remote mouse and keyboard are ignored.")
+        print(f"    Allow it in System Settings > Privacy & Security > Accessibility: {os.path.realpath(sys.executable)}")
+    while True:
+        config = load_installed_config()
+        if not config:
+            print(f"[!] No agent configuration at {paths['config']}; run --install again.")
+            return 1
+        try:
+            asyncio.run(run_websocket_client(config["server"], config["device_id"], config["token"]))
+        except KeyboardInterrupt:
+            return 0
+        except Exception as e:
+            print(f"[Agent Error] {e}")
+        # Returning means the token was rejected; wait for a reinstall instead of exiting,
+        # which the service manager would only restart.
+        import time
+        time.sleep(INSTALLED_AUTH_RETRY_SECONDS)
+
+
+# ═════════════════════════════════════════════════════════════
 # Main Entry Point
 # ═════════════════════════════════════════════════════════════
 
@@ -674,7 +1111,24 @@ def main():
     parser.add_argument("--device", "-d", help="Your Device ID (e.g. AG-816-555-726) shown on screen")
     parser.add_argument("--token", "-t", help="Agent token shown on the Host screen (or set AGENT_TOKEN)")
     parser.add_argument("--server", "-s", default=DEFAULT_SERVER, help="Signaling Server URL")
+    parser.add_argument("--install", action="store_true",
+                        help="Install for this user and start automatically at every login")
+    parser.add_argument("--uninstall", action="store_true", help="Remove the installed agent and its login entry")
+    parser.add_argument("--run-installed", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.uninstall:
+        uninstall_agent()
+        return
+
+    lock = SingleInstance(installed_paths()["lock"])
+    if args.run_installed:
+        # A manually started agent may hold the lock; take over once it exits
+        import time
+        while not lock.acquire():
+            time.sleep(10)
+        write_private_file(installed_paths()["pid"], str(os.getpid()))
+        sys.exit(run_installed())
 
     device_id = get_device_id(args.device)
     token = get_agent_token(args.token)
@@ -687,6 +1141,21 @@ def main():
     device_id = device_id.replace(" ", "-").upper()
     if not device_id.startswith("AG-"):
         device_id = f"AG-{device_id}"
+
+    if args.install:
+        install_agent(args.server, device_id, token)
+        return
+
+    if not lock.acquire():
+        installed = load_installed_config()
+        print("[!] A companion agent is already running for this user account.")
+        if installed and installed["device_id"] == device_id:
+            print(f"    The installed agent already serves {device_id}.")
+        elif installed:
+            print(f"    It is installed for {installed['device_id']}. To link it to {device_id} instead, run")
+            print("    the install command from the Host screen.")
+        sys.exit(1)
+    write_private_file(installed_paths()["pid"], str(os.getpid()))
 
     try:
         asyncio.run(run_websocket_client(args.server, device_id, token))
