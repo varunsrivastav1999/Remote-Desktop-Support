@@ -4,7 +4,8 @@ export function isNativeApp() {
 
 export function loadNetworkSettings() {
   const defaults = {
-    signalingServer: isNativeApp() ? 'ws://localhost:8000/ws/' : '',
+    // Installers can be built for a server with VITE_SIGNALING_SERVER=wss://example.com/ws/
+    signalingServer: isNativeApp() ? (import.meta.env.VITE_SIGNALING_SERVER || 'ws://localhost:8000/ws/') : '',
   }
   try {
     const stored = localStorage.getItem('ad_settings')

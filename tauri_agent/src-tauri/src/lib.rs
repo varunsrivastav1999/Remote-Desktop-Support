@@ -4,7 +4,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use tauri::Manager;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use std::thread;
 
 fn mouse_button(button: i32) -> Option<MouseButton> {
@@ -56,57 +58,145 @@ fn keyboard_key(key: &str) -> Option<Key> {
     }
 }
 
-static ENIGO: OnceLock<Mutex<Enigo>> = OnceLock::new();
+enum InputCommand {
+    Move(f64, f64),
+    Button(MouseButton, bool),
+    Scroll(i32, i32),
+    Key(Key, bool),
+}
 
-fn get_enigo() -> &'static Mutex<Enigo> {
-    ENIGO.get_or_init(|| Mutex::new(Enigo::new()))
+// enigo's macOS handle is not Send, so a single thread owns it and replays commands in order
+static INPUT: OnceLock<Mutex<mpsc::Sender<InputCommand>>> = OnceLock::new();
+
+fn send_input(command: InputCommand) {
+    let sender = INPUT.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<InputCommand>();
+        thread::spawn(move || {
+            let mut enigo = Enigo::new();
+            for command in receiver {
+                match command {
+                    InputCommand::Move(x, y) => {
+                        let (width, height) = enigo.main_display_size();
+                        let target_x = (x.clamp(0.0, 1.0) * f64::from(width.saturating_sub(1))).round() as i32;
+                        let target_y = (y.clamp(0.0, 1.0) * f64::from(height.saturating_sub(1))).round() as i32;
+                        enigo.mouse_move_to(target_x, target_y);
+                    }
+                    InputCommand::Button(button, true) => enigo.mouse_down(button),
+                    InputCommand::Button(button, false) => enigo.mouse_up(button),
+                    InputCommand::Scroll(delta_x, delta_y) => {
+                        if delta_x != 0 {
+                            enigo.mouse_scroll_x(delta_x.clamp(-20, 20));
+                        }
+                        if delta_y != 0 {
+                            enigo.mouse_scroll_y(delta_y.clamp(-20, 20));
+                        }
+                    }
+                    InputCommand::Key(key, true) => enigo.key_down(key),
+                    InputCommand::Key(key, false) => enigo.key_up(key),
+                }
+            }
+        });
+        Mutex::new(sender)
+    });
+    if let Ok(sender) = sender.lock() {
+        let _ = sender.send(command);
+    }
 }
 
 #[tauri::command]
 fn move_mouse(x: f64, y: f64) {
-    if let Ok(mut enigo) = get_enigo().lock() {
-        let (width, height) = enigo.main_display_size();
-        let target_x = (x.clamp(0.0, 1.0) * f64::from(width.saturating_sub(1))).round() as i32;
-        let target_y = (y.clamp(0.0, 1.0) * f64::from(height.saturating_sub(1))).round() as i32;
-        enigo.mouse_move_to(target_x, target_y);
-    }
+    send_input(InputCommand::Move(x, y));
 }
 
 #[tauri::command]
 fn mouse_event(button: i32, is_down: bool) {
     if let Some(button) = mouse_button(button) {
-        if let Ok(mut enigo) = get_enigo().lock() {
-            if is_down {
-                enigo.mouse_down(button);
-            } else {
-                enigo.mouse_up(button);
-            }
-        }
+        send_input(InputCommand::Button(button, is_down));
     }
 }
 
 #[tauri::command]
 fn scroll_mouse(delta_x: i32, delta_y: i32) {
-    if let Ok(mut enigo) = get_enigo().lock() {
-        if delta_x != 0 {
-            enigo.mouse_scroll_x(delta_x.clamp(-20, 20));
-        }
-        if delta_y != 0 {
-            enigo.mouse_scroll_y(delta_y.clamp(-20, 20));
-        }
-    }
+    send_input(InputCommand::Scroll(delta_x, delta_y));
 }
 
 #[tauri::command]
 fn key_event(key: String, is_down: bool) {
     if let Some(key) = keyboard_key(&key) {
-        if let Ok(mut enigo) = get_enigo().lock() {
-            if is_down {
-                enigo.key_down(key);
-            } else {
-                enigo.key_up(key);
-            }
+        send_input(InputCommand::Key(key, is_down));
+    }
+}
+
+// ═════════════════════════════════════════════════════════════
+// Input Permission (macOS Accessibility) and Start at Login
+// ═════════════════════════════════════════════════════════════
+
+#[cfg(target_os = "macos")]
+mod accessibility {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::string::CFString;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+        fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+    }
+
+    /// Without Accessibility, macOS silently drops injected mouse and keyboard events.
+    pub fn is_trusted(prompt: bool) -> bool {
+        if !prompt {
+            return unsafe { AXIsProcessTrusted() };
         }
+        let options = CFDictionary::from_CFType_pairs(&[(
+            CFString::new("AXTrustedCheckOptionPrompt"),
+            CFBoolean::true_value(),
+        )]);
+        unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
+    }
+}
+
+/// Whether this app may inject input; `None` where no permission is needed.
+#[tauri::command]
+fn input_permission(prompt: bool) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(accessibility::is_trusted(prompt))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = prompt;
+        None
+    }
+}
+
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let launcher = app.autolaunch();
+    if enabled {
+        launcher.enable().map_err(|e| e.to_string())?;
+    } else {
+        launcher.disable().map_err(|e| e.to_string())?;
+    }
+    launcher.is_enabled().map_err(|e| e.to_string())
+}
+
+/// Start at login is on by default, once: turning it off later (here or in the OS) sticks.
+fn enable_autostart_on_first_run(app: &tauri::AppHandle) {
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let marker = dir.join("autostart-initialized");
+    if marker.exists() {
+        return;
+    }
+    if app.autolaunch().enable().is_ok() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(&marker, b"1");
     }
 }
 
@@ -424,6 +514,14 @@ fn fs_mkdir(target_path: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--autostarted"]),
+        ))
+        .setup(|app| {
+            enable_autostart_on_first_run(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             move_mouse,
             mouse_event,
@@ -438,7 +536,10 @@ pub fn run() {
             fs_read_chunk,
             fs_write_chunk,
             fs_delete,
-            fs_mkdir
+            fs_mkdir,
+            input_permission,
+            get_autostart,
+            set_autostart
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

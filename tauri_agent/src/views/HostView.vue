@@ -36,8 +36,17 @@
           <span>{{ session.hasAgent.value ? 'Native Remote Control Active (Clicks, Keys & Terminal Enabled)' : 'Remote Control Companion Offline' }}</span>
         </div>
 
+        <!-- The desktop app injects input itself, but macOS drops it without Accessibility -->
+        <div v-if="nativeHost && inputAllowed === false" class="agent-launcher-box">
+          <p class="agent-launcher-title">Allow Accessibility so remote mouse and keyboard work</p>
+          <p class="agent-launcher-hint">
+            In System Settings &gt; Privacy &amp; Security &gt; Accessibility, turn on Remote Desktop Support.
+          </p>
+          <button class="btn btn--xs btn--secondary" @click="checkInputPermission(true)">Open the permission prompt</button>
+        </div>
+
         <!-- One-time companion install command for Browser Host -->
-        <div v-if="!session.hasAgent.value && session.sessionCode.value" class="agent-launcher-box">
+        <div v-if="!nativeHost && !session.hasAgent.value && session.sessionCode.value" class="agent-launcher-box">
           <p class="agent-launcher-title">To enable mouse, keyboard, and terminal control on this computer, install the companion once:</p>
           <div class="agent-launcher-tabs" role="tablist">
             <button
@@ -122,6 +131,7 @@ import { useHostSession } from '../composables/useHostSession.js'
 import { useDevice } from '../composables/useDevice.js'
 import { apiUrl, isNativeApp } from '../composables/serverConfig.js'
 import ChatPanel from '../components/ChatPanel.vue'
+import { invoke } from '@tauri-apps/api/core'
 
 const router = useRouter()
 const videoEl = ref(null)
@@ -137,6 +147,18 @@ const statusDot = computed(() => {
   if (session.sessionCode.value) return 'status-dot--waiting'
   return 'status-dot--offline'
 })
+
+// true/false on macOS, null where the OS needs no input permission
+const inputAllowed = ref(null)
+let inputPermissionTimer = null
+async function checkInputPermission(prompt = false) {
+  if (!nativeHost) return
+  try {
+    inputAllowed.value = await invoke('input_permission', { prompt })
+  } catch (_) {
+    inputAllowed.value = null
+  }
+}
 
 const copiedCmd = ref(false)
 const agentOsOptions = [
@@ -249,11 +271,19 @@ onMounted(async () => {
   if (videoEl.value && session.localStream.value) {
     videoEl.value.srcObject = session.localStream.value
   }
+  if (nativeHost) {
+    await checkInputPermission(true)
+    // Picks up the switch being turned on in System Settings
+    inputPermissionTimer = setInterval(() => {
+      if (inputAllowed.value === false) checkInputPermission(false)
+    }, 3000)
+  }
   await session.ensureOnline()
   if (session.sessionCode.value) setHostedAddress(session.sessionCode.value, session.state.value)
 })
 
 onUnmounted(() => {
+  if (inputPermissionTimer) clearInterval(inputPermissionTimer)
   session.stopSharing()
 })
 </script>

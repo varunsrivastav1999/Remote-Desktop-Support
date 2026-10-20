@@ -168,6 +168,17 @@
 
               <!-- Security & PIN -->
               <div v-if="settingsTab === 'security'" class="st-section">
+                <div v-if="nativeHost && autostartEnabled !== null" class="st-group st-row">
+                  <div class="st-text">
+                    <label>Start at Login</label>
+                    <p class="st-hint">Open Remote Desktop Support when you log in, so this computer stays reachable.</p>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" :checked="autostartEnabled" @change="toggleAutostart($event.target.checked)"/>
+                    <span class="toggle__slider"></span>
+                  </label>
+                </div>
+
                 <div class="st-group st-row">
                   <div class="st-text">
                     <label>Unattended Access</label>
@@ -259,6 +270,7 @@ import { useMyAddress } from './composables/useMyAddress'
 import { useSessions } from './composables/useSessions'
 import { useHostSession } from './composables/useHostSession'
 import { apiUrl, isNativeApp, loadNetworkSettings } from './composables/serverConfig'
+import { invoke } from '@tauri-apps/api/core'
 
 const router = useRouter()
 const device = useDevice()
@@ -336,6 +348,17 @@ try {
 watch(() => settings.value, (newVal) => {
   localStorage.setItem('ad_settings', JSON.stringify(newVal))
 }, { deep: true })
+
+// null until the desktop app reports it (and always in a browser)
+const autostartEnabled = ref(null)
+async function loadAutostart() {
+  if (!nativeHost) return
+  try { autostartEnabled.value = await invoke('get_autostart') } catch (_) { autostartEnabled.value = null }
+}
+async function toggleAutostart(enabled) {
+  try { autostartEnabled.value = await invoke('set_autostart', { enabled }) } catch (_) { await loadAutostart() }
+}
+loadAutostart()
 
 async function saveSecuritySettings() {
   localStorage.setItem('ad_settings', JSON.stringify(settings.value))
