@@ -35,11 +35,12 @@ while true; do
     echo "  Target commit:  $REMOTE_HASH"
     echo "[Auto-Updater] Pulling latest changes..."
 
-    # Reset or pull changes
-    git pull --rebase origin "$BRANCH" || {
-      echo "[Auto-Updater] Rebase failed, attempting fast-forward merge..."
-      git merge --ff-only "origin/$BRANCH" || true
-    }
+    # Fast-forward only; never rebuild code that did not actually update
+    if ! git merge --ff-only "origin/$BRANCH"; then
+      echo "[Auto-Updater] ❌ Could not fast-forward to origin/$BRANCH (local changes or diverged history)."
+      echo "[Auto-Updater]    Run 'git status' in the repository and resolve it. Services were not rebuilt."
+      continue
+    fi
 
     echo "[Auto-Updater] Rebuilding and applying Docker services..."
     docker compose up -d --build
