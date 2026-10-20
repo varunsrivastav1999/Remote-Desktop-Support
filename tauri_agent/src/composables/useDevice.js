@@ -351,6 +351,18 @@ function markRequestHandled(reqId) {
   }
 }
 
+// The same caller often arrives twice: its unverified /connect request (re-sent by the heartbeat)
+// and its verified signaling join. A verified request must not be overwritten by an unverified one
+// for the same Device ID, or the prompt would call a genuine caller "unverified".
+function setIncomingRequest(next) {
+  const current = incomingRequest.value
+  if (current?.callerVerified && !next.callerVerified && current.callerDeviceId === next.callerDeviceId) {
+    return false
+  }
+  incomingRequest.value = next
+  return true
+}
+
 function triggerIncomingRequest(req = {}) {
   const callerId = req.callerDeviceId || 'Remote Client'
   if (callerId && callerId === deviceId.value) {
@@ -362,13 +374,13 @@ function triggerIncomingRequest(req = {}) {
     console.log('[Remote Desktop] Ignored already handled request in triggerIncomingRequest:', reqId)
     return
   }
-  incomingRequest.value = {
+  const updated = setIncomingRequest({
     requestId: reqId,
     callerDeviceId: callerId,
     callerName: req.callerName || 'Remote Controller',
     callerVerified: req.callerVerified === true,
-  }
-  if (onIncomingRequestCallback) {
+  })
+  if (updated && onIncomingRequestCallback) {
     onIncomingRequestCallback(incomingRequest.value)
   }
 }
@@ -392,14 +404,14 @@ function handlePushMessage(msg) {
       console.log('[Remote Desktop] Ignored already handled push request:', reqId)
       return
     }
-    incomingRequest.value = {
+    const updated = setIncomingRequest({
       requestId: reqId,
       callerDeviceId: callerId,
       callerName: msg.caller_name || 'Remote Controller',
       // Set by the server only when the caller proved its Device ID with that device's token
       callerVerified: msg.caller_verified === true,
-    }
-    if (onIncomingRequestCallback) {
+    })
+    if (updated && onIncomingRequestCallback) {
       onIncomingRequestCallback(incomingRequest.value)
     }
   } else if (msg.type === 'unattended_session_started') {

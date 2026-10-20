@@ -230,6 +230,8 @@ import MonitorSelector from './MonitorSelector.vue'
 
 const props = defineProps({
   connectionState: { type: String, default: 'new' },
+  // The screen arrives through the server because there is no peer-to-peer path
+  relayed: { type: Boolean, default: false },
   dataChannelState: { type: String, default: 'closed' },
   sessionCode: { type: String, default: '' },
   hostInfo: { type: Object, default: null },
@@ -260,7 +262,7 @@ const statusDotClass = computed(() => {
 })
 
 const statusLabel = computed(() => {
-  if (props.connectionState === 'connected') return 'Connected'
+  if (props.connectionState === 'connected') return props.relayed ? 'Connected (relayed)' : 'Connected'
   return { connecting: 'Connecting...', failed: 'Failed', disconnected: 'Disconnected' }[props.connectionState] || 'Waiting...'
 })
 </script>

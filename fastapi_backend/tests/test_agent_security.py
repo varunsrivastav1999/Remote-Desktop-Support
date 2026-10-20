@@ -16,6 +16,8 @@ and the endpoints that trusted anyone who knew a Device ID:
  10. GET /api/v1/sessions/request/{id}, which returned the session token to anyone with the id
  11. the caller identity on client registration: the Device ID and name in the host's approval prompt
      were unverified, and any socket could replace a controller waiting for approval
+ 12. screen frames relayed over /ws when no peer-to-peer path exists: only the approved controller
+     may receive them
 
 Run against an isolated stack, never the live one:
     BASE_URL=http://127.0.0.1:18000 python tests/test_agent_security.py
@@ -729,6 +731,44 @@ async def test_signaling_caller_identity_is_verified():
     print("✓ The host sees whether a caller's Device ID is verified, and a verified caller can't be displaced")
 
 
+# ─── 12. Screen frames relayed over signaling ─────────────────────────────────
+
+async def test_relayed_frames_only_reach_approved_controller():
+    device_id, device_token, _ = new_device()
+    host = client = None
+    try:
+        host, reply = await register_host(device_id, device_token)
+        assert reply == {"type": "registered", "role": "host"}, reply
+        await drain(host, 0.3)
+        client = await register_client(device_id, "Controller")
+        client_conn = await peer_joined_connection(host)
+        await drain(client, 0.3)
+
+        # Before approval the controller that joined gets no frames of the host's screen
+        frame = {"type": "frame", "w": 2, "h": 2, "data": "c2VjcmV0LXNjcmVlbg=="}
+        await host.send(json.dumps(frame))
+        assert await drain(client, 0.5) == [], "A relayed frame reached a controller the host never approved"
+
+        # The controller's relay request reaches the host; frames reach it once approved
+        await client.send(json.dumps({"type": "relay_request"}))
+        assert any(m.get("type") == "relay_request" for m in await drain(host, 0.5))
+        await host.send(json.dumps({"type": "offer", "sdp": {"type": "offer", "sdp": "v=0"},
+                                    "client_connection_id": client_conn}))
+        await drain(client, 0.5)
+        await host.send(json.dumps(frame))
+        got = await drain(client, 0.5)
+        assert any(m.get("type") == "frame" and m.get("data") == frame["data"] for m in got), got
+
+        # Only the host can send frames
+        await client.send(json.dumps(frame))
+        assert all(m.get("type") != "frame" for m in await drain(host, 0.5))
+    finally:
+        for ws in (host, client):
+            if ws:
+                await ws.close()
+    print("✓ Relayed screen frames reach only the approved controller")
+
+
 async def main():
     await test_rest_agent_dispatch_requires_device_token()
     await test_signaling_host_requires_valid_token()
@@ -742,6 +782,7 @@ async def main():
     await test_signaling_client_traffic_only_reaches_approved_controller()
     await test_request_status_requires_request_token()
     await test_signaling_caller_identity_is_verified()
+    await test_relayed_frames_only_reach_approved_controller()
     print("\n>>> ALL AGENT SECURITY TESTS PASSED! <<<")
 
 

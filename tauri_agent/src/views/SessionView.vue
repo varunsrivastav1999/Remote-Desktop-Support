@@ -3,6 +3,7 @@
     <!-- Toolbar -->
     <Toolbar
       :connection-state="webrtc.connectionState.value"
+      :relayed="webrtc.relayed.value"
       :data-channel-state="webrtc.dataChannelState.value"
       :session-code="code"
       :host-info="webrtc.hostInfo.value"

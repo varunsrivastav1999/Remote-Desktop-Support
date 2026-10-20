@@ -4,6 +4,7 @@ import { apiUrl, loadNetworkSettings, isNativeApp, getDefaultIceServers } from '
 import { useScreenShare } from './useScreenShare.js'
 import { useSignaling } from './useSignaling.js'
 import { useDevice } from './useDevice.js'
+import { createFrameSender } from './useFrameRelay.js'
 
 // How long a PIN-verified unattended request waits for its caller to join the signaling room
 const UNATTENDED_GRANT_MS = 60000
@@ -50,6 +51,8 @@ function createHostSession() {
   let pendingClientConnection = null
   // A PIN-verified unattended request pre-approves exactly one verified connection from that caller
   let unattendedGrant = null // { callerId, expires }
+  // Stops the screen relay over signaling (used when no peer-to-peer path exists); null when off
+  let stopFrameRelay = null
   let onlinePromise = null
   let currentIncomingUpload = null
   let agentPollTimer = null
@@ -223,6 +226,15 @@ function createHostSession() {
         }
       }
 
+      if (message.type === 'relay_request') {
+        await startFrameRelay()
+        return
+      }
+      if (message.type === 'relay_stop') {
+        stopRelay()
+        return
+      }
+
       if (message.type === 'take_control' || message.type === 'release_control') {
         await handleControlMessage(message)
         return
@@ -304,6 +316,53 @@ function createHostSession() {
     }
   }
 
+  async function systemInfo() {
+    let agentInfo = null
+    try {
+      const res = await requestAgent({ type: 'get_info' }, 2000)
+      if (res && !res.error) {
+        agentInfo = res
+      }
+    } catch (_) {}
+
+    return {
+      type: 'system_info',
+      device_id: sessionCode.value,
+      hostname: agentInfo?.hostname || device.deviceName.value || hostLabel(),
+      username: agentInfo?.username || '',
+      primary_ip: agentInfo?.primary_ip || '',
+      lan_ips: agentInfo?.lan_ips || [],
+      os_name: agentInfo?.os_name || hostLabel(),
+      platform: agentInfo?.platform || hostLabel(),
+      ssh_running: !!agentInfo?.ssh_running,
+      monitors: [{ index: 1, name: 'Shared screen' }],
+      current_monitor: 1,
+      quality: 'medium',
+    }
+  }
+
+  // The controller found no peer-to-peer path to us: send the screen over signaling instead.
+  // Only after approval (a peer connection exists); the server delivers frames to the approved
+  // controller alone.
+  async function startFrameRelay() {
+    if (stopFrameRelay || !peerConnection || !screenShare.localStream.value) return
+    console.log('[HostSession] No peer-to-peer path; relaying the screen through the server')
+    stopFrameRelay = createFrameSender(
+      screenShare.localStream.value,
+      (frame) => signaling.send(frame),
+      signaling.bufferedAmount,
+    )
+    state.value = 'connected'
+    statusText.value = 'Remote desktop active (relayed through the server).'
+    signaling.send(await systemInfo())
+  }
+
+  function stopRelay() {
+    if (!stopFrameRelay) return
+    stopFrameRelay()
+    stopFrameRelay = null
+  }
+
   function takeUnattendedGrant(callerId, verified, clientConnection) {
     const grant = unattendedGrant
     if (!grant || Date.now() > grant.expires) {
@@ -347,6 +406,8 @@ function createHostSession() {
         state.value = 'connected'
         statusText.value = 'Remote desktop active. Controlling permitted.'
       } else if (['failed', 'disconnected'].includes(peerConnection.connectionState)) {
+        // With no peer-to-peer path the session carries on over the frame relay
+        if (stopFrameRelay) return
         state.value = 'waiting'
         statusText.value = 'Connection ended. Ready for a new request.'
         // Release through the normal path so the server and controller drop control too
@@ -357,28 +418,7 @@ function createHostSession() {
     // ─── Control Data Channel ──────────────────────────────
     controlChannel = peerConnection.createDataChannel('control', { ordered: true })
     controlChannel.onopen = async () => {
-      let agentInfo = null
-      try {
-        const res = await requestAgent({ type: 'get_info' }, 2000)
-        if (res && !res.error) {
-          agentInfo = res
-        }
-      } catch (_) {}
-
-      sendControl({
-        type: 'system_info',
-        device_id: sessionCode.value,
-        hostname: agentInfo?.hostname || device.deviceName.value || hostLabel(),
-        username: agentInfo?.username || '',
-        primary_ip: agentInfo?.primary_ip || '',
-        lan_ips: agentInfo?.lan_ips || [],
-        os_name: agentInfo?.os_name || hostLabel(),
-        platform: agentInfo?.platform || hostLabel(),
-        ssh_running: !!agentInfo?.ssh_running,
-        monitors: [{ index: 1, name: 'Shared screen' }],
-        current_monitor: 1,
-        quality: 'medium',
-      })
+      sendControl(await systemInfo())
     }
     controlChannel.onmessage = (event) => handleControlMessage(event.data)
 
@@ -837,6 +877,7 @@ function createHostSession() {
   function closePeer() {
     releasePressedInput()
     stopTerminalPolling()
+    stopRelay()
     if (controlChannel) {
       controlChannel.close()
       controlChannel = null

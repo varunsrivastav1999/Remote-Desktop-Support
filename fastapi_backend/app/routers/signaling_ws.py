@@ -36,6 +36,10 @@ SIGNAL_TYPES = {
     "offer": ("host", "client"),
     "answer": ("client", "host"),
     "ice_restart_request": ("client", "host"),
+    # Fallback when no peer-to-peer path exists: the controller asks the host to stream frames
+    # through this socket instead (see "frame" below)
+    "relay_request": ("client", "host"),
+    "relay_stop": ("client", "host"),
     "permission_denied": ("host", "client"),
     "session_ended": ("host", "client"),
 }
@@ -687,6 +691,11 @@ async def signaling_endpoint(websocket: WebSocket, session_id: str) -> None:
                 else:
                     await end_control()
                 target_role = "client"
+            elif message_type == "frame" and role == "host":
+                # Relayed screen frames carry the host's screen, so they go only to the controller
+                # the host approved (never to a client that merely joined the room)
+                target_role = "client"
+                target_connection = await approved_client() or ""
             elif message_type in ("system_info", "monitors", "monitor_switched", "quality_changed", "host_stats"):
                 # Forward from host to client
                 target_role = "client"

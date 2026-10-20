@@ -16,6 +16,10 @@
 
 import { ref, readonly, reactive } from 'vue'
 import { getDefaultIceServers } from './serverConfig.js'
+import { createFrameReceiver } from './useFrameRelay.js'
+
+// How long to wait for a peer-to-peer path after answering before relaying through the server
+const RELAY_FALLBACK_MS = 10000
 
 const INPUT_EVENT_TYPES = new Set([
   'mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'scroll',
@@ -33,6 +37,11 @@ export function useWebRTC(signaling) {
   const dataChannelState = ref('closed') // closed | connecting | open
   const offerReceived = ref(false)
   const waitingForHost = ref(true)
+  // True while the screen arrives as frames over signaling because no peer-to-peer path exists
+  const relayed = ref(false)
+  let frameReceiver = null
+  let rtcStream = null
+  let relayTimer = null
 
   // ─── Control State (View Only by default) ─────────────────
   const isControlling = ref(false)
@@ -111,8 +120,13 @@ export function useWebRTC(signaling) {
 
     // ─── Connection state ────────────────────────────────
     pc.onconnectionstatechange = () => {
-      connectionState.value = pc.connectionState
       console.log('[WebRTC] Connection state:', pc.connectionState)
+      if (relayed.value) {
+        // A late peer-to-peer path is better than the relay; otherwise the relay carries on
+        if (pc.connectionState === 'connected') stopRelay()
+        else return
+      }
+      connectionState.value = pc.connectionState
 
       if (pc.connectionState === 'connected') {
         startStatsPolling()
@@ -133,6 +147,7 @@ export function useWebRTC(signaling) {
 
       if (pc.iceConnectionState === 'failed') {
         handleIceFailure()
+        startRelay()
       }
     }
 
@@ -149,11 +164,8 @@ export function useWebRTC(signaling) {
     pc.ontrack = (event) => {
       console.log('[WebRTC] Received remote track:', event.track.kind, event.track.id)
       event.track.enabled = true
-      if (event.streams && event.streams.length > 0) {
-        remoteStream.value = event.streams[0]
-      } else {
-        remoteStream.value = new MediaStream([event.track])
-      }
+      rtcStream = event.streams && event.streams.length > 0 ? event.streams[0] : new MediaStream([event.track])
+      if (!relayed.value) remoteStream.value = rtcStream
       connectionState.value = 'connected'
     }
 
@@ -192,6 +204,12 @@ export function useWebRTC(signaling) {
             type: answer.type,
             sdp: answer.sdp,
           })
+
+          // Some networks have no peer-to-peer path at all (and no reachable TURN relay)
+          clearTimeout(relayTimer)
+          relayTimer = setTimeout(() => {
+            if (peerConnection.value === pc && pc.connectionState !== 'connected') startRelay()
+          }, RELAY_FALLBACK_MS)
         } else if (msg.type === 'answer') {
           console.log('[WebRTC] Received SDP answer')
           await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
@@ -206,6 +224,8 @@ export function useWebRTC(signaling) {
           } else {
             iceCandidateQueue.push(msg.candidate)
           }
+        } else if (msg.type === 'frame') {
+          frameReceiver?.push(msg)
         } else if (msg.type === 'session_credential') {
           viewerToken.value = msg.viewer_token || ''
         } else if (msg.type === 'waiting_for_host') {
@@ -218,6 +238,7 @@ export function useWebRTC(signaling) {
           }
         } else if (msg.type === 'peer_left') {
           console.log(`[WebRTC] Peer left (${msg.role})`)
+          stopRelay(false)
           connectionState.value = 'disconnected'
           resetControlState()
         } else if (msg.type === 'permission_denied') {
@@ -227,6 +248,7 @@ export function useWebRTC(signaling) {
           signaling.disconnect()
         } else if (msg.type === 'session_ended') {
           console.log('[WebRTC] Host ended the sharing session')
+          stopRelay(false)
           connectionState.value = 'disconnected'
           resetControlState()
           signaling.disconnect()
@@ -664,9 +686,34 @@ export function useWebRTC(signaling) {
     }
   }
 
+  // ─── Screen relay over signaling (fallback) ──────────────
+
+  function startRelay() {
+    if (relayed.value) return
+    console.warn('[WebRTC] No peer-to-peer path to the host; relaying the screen through the server')
+    relayed.value = true
+    frameReceiver = createFrameReceiver()
+    remoteStream.value = frameReceiver.stream
+    connectionState.value = 'connected'
+    signaling.send({ type: 'relay_request' })
+  }
+
+  function stopRelay(notifyHost = true) {
+    clearTimeout(relayTimer)
+    relayTimer = null
+    if (!relayed.value) return
+    relayed.value = false
+    if (notifyHost) signaling.send({ type: 'relay_stop' })
+    frameReceiver?.stop()
+    frameReceiver = null
+    remoteStream.value = rtcStream
+    console.log('[WebRTC] Relay stopped')
+  }
+
   // ─── Cleanup ─────────────────────────────────────────────
 
   function close() {
+    stopRelay(false)
     stopStatsPolling()
     if (terminalChannel.value) {
       terminalChannel.value.close()
@@ -695,6 +742,7 @@ export function useWebRTC(signaling) {
   return {
     remoteStream: readonly(remoteStream),
     connectionState: readonly(connectionState),
+    relayed: readonly(relayed),
     iceState: readonly(iceState),
     dataChannelState: readonly(dataChannelState),
     authRequired: readonly(authRequired),

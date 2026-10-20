@@ -154,6 +154,11 @@ export function useSignaling() {
     return true
   }
 
+  // Bytes queued on the socket but not yet sent (used to drop relayed frames on a slow link)
+  function bufferedAmount() {
+    return socket.value?.bufferedAmount || 0
+  }
+
   function register(role, hostToken = '', extra = {}) {
     const message = { type: 'register', role, ...extra }
     if (role === 'host') message.host_token = hostToken
@@ -211,6 +216,7 @@ export function useSignaling() {
     disconnect,
     register,
     send,
+    bufferedAmount,
     sendOffer,
     sendAnswer,
     sendIceCandidate,
